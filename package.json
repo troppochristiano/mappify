@@ -1,0 +1,20 @@
+{
+  "name": "mappify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node tools/dev.js",
+    "server": "node server/api.js",
+    "web": "npm run dev --prefix web",
+    "db:init": "node server/db.js",
+    "index:build": "node tools/build-mb-index.js --all",
+    "index:info": "node server/mbindex.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4"
+  }
+}

@@ -1,0 +1,466 @@
+/* Spotify-like dark UI. Styled after their visual language, not their brand:
+   no logo, no wordmark, nothing implying endorsement. */
+
+:root {
+  color-scheme: dark;
+  --bg: #121212;
+  --bg-deep: #000000;
+  --surface: #181818;
+  --surface-hi: #282828;
+  --line: #2a2a2a;
+  --text: #ffffff;
+  --muted: #b3b3b3;
+  --dim: #7a7a7a;
+  --accent: #1db954;
+  --accent-hi: #1ed760;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.003em;
+}
+
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--accent-hi); }
+button, input, select { font: inherit; color: inherit; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #565656; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Contained routes. The globe route opts out entirely. */
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 24px 96px; }
+.wrap--bleed { max-width: none; margin: 0; padding: 0; height: 100%; }
+
+h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 0; }
+h2 { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+
+/* ---------- chrome ---------- */
+
+header.app { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+header.app.floating {
+  position: absolute; inset: 12px 12px auto 12px; z-index: 5;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 14px; border: 0; border-radius: 10px;
+  background: rgba(18, 18, 18, .72);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+}
+
+nav.tabs { display: flex; gap: 4px; }
+nav.tabs a {
+  padding: 6px 14px; border-radius: 999px; color: var(--muted);
+  font-weight: 600; font-size: 13px; transition: background .15s, color .15s;
+}
+nav.tabs a:hover { color: var(--text); background: var(--surface-hi); }
+nav.tabs a[aria-current="page"] { background: var(--text); color: #000; }
+nav.tabs a[aria-current="page"]:hover { color: #000; }
+
+.meta { display: flex; flex-wrap: wrap; gap: 0 18px; color: var(--dim); font-size: 12px; }
+.meta b { color: var(--muted); font-weight: 700; }
+
+.controls {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  padding: 14px 0; color: var(--muted); font-size: 13px;
+}
+
+input[type="search"] {
+  background: var(--surface-hi); border: 1px solid transparent; color: var(--text);
+  padding: 9px 14px; width: 320px; border-radius: 999px; outline: none;
+}
+input[type="search"]::placeholder { color: var(--dim); }
+input[type="search"]:focus { border-color: var(--muted); background: #303030; }
+
+.seg { display: flex; gap: 4px; }
+.seg button {
+  background: var(--surface-hi); border: 0; color: var(--muted);
+  padding: 6px 13px; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600;
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--text); color: #000; }
+
+/* Sits in the same toolbar as the pill buttons, so it borrows their shape. The
+   width is capped because playlist names run long — and one in this library is
+   sixty characters of emoji. */
+.source-filter {
+  background: var(--surface-hi); border: 0; color: var(--text);
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  font-size: 12px; font-weight: 600; font-family: inherit;
+  max-width: 190px;
+}
+.source-filter:hover { color: var(--text); }
+
+/* An action that reads as part of the sentence around it. */
+.linkish {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--accent); font: inherit; text-decoration: underline;
+}
+.linkish:hover { color: var(--text); }
+
+.origin-picker { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.origin-picker input { width: 100%; }
+
+.ghost {
+  background: transparent; border: 1px solid #4a4a4a; color: var(--text);
+  padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600;
+}
+.ghost:hover { border-color: var(--text); transform: scale(1.03); }
+
+.primary {
+  background: var(--accent); border: 0; color: #000; font-weight: 700;
+  padding: 8px 18px; border-radius: 999px; cursor: pointer;
+}
+.primary:hover { background: var(--accent-hi); transform: scale(1.03); }
+
+/* ---------- tables ---------- */
+
+table { border-collapse: collapse; width: 100%; }
+td, th { padding: 8px 12px 8px 0; text-align: left; vertical-align: middle; }
+th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+tbody tr { border-top: 1px solid var(--line); }
+tbody tr:hover { background: var(--surface); }
+td.num { text-align: right; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.place { color: var(--muted); white-space: nowrap; }
+.artist-name { font-weight: 600; }
+
+.badge {
+  border: 1px solid #3f3f3f; color: var(--dim); border-radius: 4px;
+  padding: 1px 6px; margin-left: 6px; font-size: 11px; white-space: nowrap;
+}
+.badge.warn { border-color: var(--accent); color: var(--accent); }
+
+.empty { color: var(--dim); padding: 28px 0; }
+
+/* ---------- place tree ---------- */
+
+aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
+.tree-row { display: flex; align-items: stretch; border-radius: 4px; }
+.tree-row:hover { background: var(--surface-hi); }
+.twisty {
+  flex: 0 0 18px; width: 18px; background: transparent; border: 0;
+  padding: 0; cursor: pointer; color: var(--dim); font-size: 10px; text-align: left;
+}
+.twisty:hover { color: var(--text); }
+.twisty.spacer { cursor: default; }
+.tree-label {
+  display: flex; justify-content: space-between; gap: 8px; flex: 1 1 auto;
+  background: transparent; border: 0; padding: 5px 8px 5px 0; cursor: pointer;
+  text-align: left; color: var(--muted); font-size: 13px; border-radius: 4px;
+}
+.tree-label:hover { color: var(--text); }
+.tree-label.country { font-weight: 700; color: var(--text); }
+.tree-label[aria-current="true"] { color: var(--accent); font-weight: 700; }
+.tree .n { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* ---------- globe ---------- */
+
+.globe-route { position: relative; height: 100%; overflow: hidden; background: var(--bg-deep); }
+.globe-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.globe-canvas.dragging { cursor: grabbing; }
+
+
+.globe-tuned {
+  position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%);
+  z-index: 3; pointer-events: none; text-align: center;
+  font-size: 13px; font-weight: 700; letter-spacing: .02em;
+  text-shadow: 0 2px 10px #000;
+}
+.globe-tuned small { display: block; font-weight: 400; color: var(--muted); }
+
+.globe-search {
+  position: absolute; left: 50%; transform: translateX(-50%); top: 62px;
+  z-index: 5; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  justify-content: center; max-width: calc(100vw - 24px);
+}
+.globe-hint {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
+  color: var(--dim); font-size: 12px; z-index: 4; pointer-events: none;
+}
+
+/* results / detail panel */
+.panel {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 340px; z-index: 6;
+  background: rgba(18, 18, 18, .94); backdrop-filter: blur(18px);
+  border-left: 1px solid var(--line); overflow: auto; padding: 12px 12px 110px;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, .5);
+}
+.panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.panel-head h1 { font-size: 19px; }
+.panel-head .back { padding: 4px 10px; font-size: 11px; }
+.panel-sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.panel .close {
+  margin-left: auto; background: transparent; border: 0; color: var(--muted);
+  cursor: pointer; font-size: 18px; line-height: 1;
+}
+.panel .close:hover { color: var(--text); }
+
+
+/* ---------- player ---------- */
+
+/* The embed rounds its own corners, and the iframe document behind them is
+   white — it is cross-origin, so that background cannot be styled away. Clipping
+   at the same 12px the embed uses cuts those corners off instead. The card owns
+   no background of its own for the same reason: any surface colour would just be
+   a second sliver showing through. */
+.player {
+  position: absolute; left: 12px; bottom: 12px; z-index: 7; width: 320px;
+  background: transparent; border-radius: 12px; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .6);
+}
+/* createController REPLACES the host div with the iframe, so the styling has to
+   target the iframe as a child of .player, not of .player-embed. */
+.player-embed { height: 80px; }
+.player iframe { display: block; border: 0; width: 100%; height: 80px; border-radius: 12px; }
+
+/* ---------- artist rows in the panel ---------- */
+
+.artist-list { list-style: none; margin: 0; padding: 0; }
+
+.arow { border-radius: 6px; }
+.arow + .arow { margin-top: 1px; }
+
+/* The whole head is the expand target; play and info sit on top of it and stop
+   propagation, so the big safe action gets the big hit area. */
+.arow-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  transition: background .12s;
+}
+.arow-head:hover { background: var(--surface-hi); }
+.arow-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.arow.open > .arow-head { background: var(--surface-hi); }
+
+.arow-chevron {
+  flex: 0 0 10px; color: var(--dim); font-size: 15px; line-height: 1;
+  transition: transform .16s ease, color .12s;
+}
+.arow.open > .arow-head .arow-chevron { transform: rotate(90deg); color: var(--text); }
+
+/* Fixed box, reserved whether or not a picture loads, so a list of 200 rows
+   does not reflow line by line as covers arrive. */
+.arow-art {
+  flex: 0 0 32px; width: 32px; height: 32px;
+  border-radius: 4px; object-fit: cover;
+  background: var(--surface-hi);
+}
+.arow-art-empty { display: block; }
+
+.arow-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.arow-name {
+  font-weight: 600; font-size: 13.5px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.arow-place {
+  color: var(--dim); font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.arow-count {
+  flex: 0 0 auto; color: var(--dim); font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Revealed on hover/focus so the resting row stays quiet, but never hidden from
+   keyboards or touch, where there is no hover to reveal them. */
+.arow-actions { flex: 0 0 auto; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+.arow-head:hover .arow-actions,
+.arow-head:focus-within .arow-actions,
+.arow.open .arow-actions { opacity: 1; }
+@media (hover: none) { .arow-actions { opacity: 1; } }
+
+.round-btn {
+  width: 22px; height: 22px; line-height: 1; padding: 0;
+  border: 1px solid #4a4a4a; border-radius: 50%; background: transparent;
+  color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.round-btn:hover { border-color: var(--text); color: var(--text); transform: scale(1.08); }
+.round-btn.play:hover { background: var(--accent); border-color: var(--accent); color: #000; }
+
+.track-list { list-style: none; margin: 2px 0 8px; padding: 0 0 0 20px; }
+.track-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: 0; border-radius: 4px; cursor: pointer;
+  padding: 4px 8px; text-align: left; color: var(--muted); font-size: 12.5px;
+}
+.track-btn:hover { background: var(--surface-hi); color: var(--text); }
+.track-btn.playing { color: var(--accent); }
+.track-mark { flex: 0 0 9px; font-size: 8px; opacity: 0; }
+.track-btn:hover .track-mark, .track-btn.playing .track-mark { opacity: 1; }
+.track-name { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-album {
+  flex: 1 1 auto; text-align: right; color: var(--dim); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.track-empty { color: var(--dim); font-size: 12px; padding: 4px 8px; }
+
+/* ---------- floating window ---------- */
+
+/* Moveable and resizable, because a dense DAG needs room and a pinned sheet
+   could neither be enlarged nor got out of the way. */
+.win {
+  position: absolute; z-index: 9;
+  display: flex; flex-direction: column;
+  background: rgba(18, 18, 18, .96); backdrop-filter: blur(18px);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .65);
+  overflow: hidden;
+}
+.win-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  cursor: grab; user-select: none; touch-action: none;
+  background: var(--surface);
+}
+.win-head:active { cursor: grabbing; }
+.win-title {
+  margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0;
+  text-transform: none; color: var(--text);
+}
+.win-actions { margin-left: auto; display: flex; gap: 4px; }
+.win-btn {
+  width: 26px; height: 26px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 14px; line-height: 1;
+}
+.win-btn:hover { background: var(--surface-hi); color: var(--text); }
+
+.win-sub {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+}
+.win-sub .panel-sub { margin: 0; }
+/* The window subtitle is the first thing to give up room when narrow. */
+.win-top { flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* min-height:0 is what lets the graph shrink inside a flex column instead of
+   forcing the window to overflow. */
+.win-body { flex: 1 1 auto; min-height: 0; display: flex; }
+
+.win-grip {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--dim) 50%, var(--dim) 62%, transparent 62%,
+                    transparent 74%, var(--dim) 74%, var(--dim) 86%, transparent 86%);
+}
+
+/* Fills the window body rather than keeping a fixed aspect ratio. */
+
+
+footer.app { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--dim); font-size: 12px; }
+footer.app p { margin: 0 0 8px; max-width: 74ch; }
+
+/* Import progress. A determinate bar, because the job knows its own total. */
+.bar { height: 4px; background: var(--surface-hi); border-radius: 2px; overflow: hidden; }
+.bar span { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+
+/* ---------- mobile ---------- */
+
+/* The globe is the whole screen on a phone, so every overlay becomes a sheet
+   rather than a floating card, and nothing may cover more than half the map at
+   once — you have to be able to see what you are selecting. */
+@media (max-width: 780px) {
+  header.app.floating {
+    inset: 8px 8px auto 8px; padding: 8px 10px; gap: 8px;
+    border-radius: 8px;
+  }
+  header.app.floating h1 { font-size: 16px; }
+  .meta { font-size: 11px; gap: 0 12px; }
+
+  .globe-search {
+    top: auto; bottom: 96px; width: calc(100vw - 16px); left: 8px;
+    transform: none; justify-content: stretch;
+  }
+  .globe-search input[type="search"] { flex: 1 1 auto; width: auto; min-width: 0; }
+  .globe-search button { flex: 0 0 auto; }
+
+  .globe-hint { display: none; }          /* no hover or scroll-zoom on touch */
+  .globe-tuned { bottom: 150px; font-size: 12px; }
+
+  .panel {
+    width: 100%; left: 0; right: 0; top: auto; bottom: 0; height: 62vh;
+    border-left: 0; border-top: 1px solid var(--line);
+    border-radius: 12px 12px 0 0; padding: 10px 12px 88px;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, .6);
+  }
+  .panel-head h1 { font-size: 17px; }
+
+  .player { left: 8px; right: 8px; bottom: 8px; width: auto; }
+
+  /* Touch targets: 44px is the smallest comfortable tap area. */
+  .ghost, .primary, .seg button { padding: 9px 14px; min-height: 38px; }
+  .tree-label { padding: 9px 8px 9px 0; }
+  .twisty { flex-basis: 26px; width: 26px; font-size: 12px; }
+}
+
+@media (max-width: 420px) {
+  .meta span:nth-child(n + 3) { display: none; }  /* keep only tracks + artists */
+  .panel { height: 68vh; }
+}
+
+/* ---------- place menu ---------- */
+
+/* One level at a time with a trail on top, rather than a nested tree: a 340px
+   column cannot show three levels of indentation and still be readable. */
+.crumbs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
+  margin: 0 0 8px; font-size: 12px;
+}
+.crumb {
+  background: transparent; border: 0; padding: 2px 4px; cursor: pointer;
+  color: var(--muted); border-radius: 4px;
+}
+.crumb:hover { color: var(--text); background: var(--surface-hi); }
+.crumb[aria-current="true"] { color: var(--text); font-weight: 700; cursor: default; }
+.crumb-sep { color: var(--dim); padding: 0 1px; }
+
+.menu-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: 0; cursor: pointer; text-align: left;
+  color: var(--muted); font-size: 13px;
+  padding: 7px 6px; border-radius: 4px;
+}
+.menu-row:hover { background: var(--surface-hi); color: var(--text); }
+.menu-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-count { color: var(--dim); font-variant-numeric: tabular-nums; }
+.menu-more { color: var(--dim); flex: 0 0 auto; }
+.menu-row:hover .menu-more { color: var(--text); }
+
+@media (max-width: 780px) {
+  .menu-row { padding: 11px 8px; }
+}
+
+/* Colour-mode key. Size needs no legend; colour is meaningless without one. */
+.legend {
+  position: absolute; right: 12px; bottom: 12px; z-index: 4;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 999px;
+  background: rgba(18, 18, 18, .8); backdrop-filter: blur(10px);
+  color: var(--muted); font-size: 11px; pointer-events: none;
+}
+.legend i { display: block; width: 96px; height: 6px; border-radius: 3px; }
+.legend em { font-style: normal; color: var(--dim); }
+
+@media (max-width: 780px) {
+  .legend { bottom: 150px; right: 8px; }
+  .legend i { width: 64px; }
+}
+
+/* Back belongs with the trail it acts on, not in the header beside the close. */
+.crumb-back {
+  border: 1px solid #4a4a4a; border-radius: 999px;
+  padding: 1px 8px; margin-right: 4px; color: var(--text);
+}
+.crumb-back:hover { border-color: var(--text); background: var(--surface-hi); }

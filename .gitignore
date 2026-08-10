@@ -1,0 +1,11 @@
+node_modules/
+.env
+# The library database: it holds your Spotify access and refresh tokens in `auth`
+# as well as your entire listening history. This line used to read organify.db*,
+# the project's old name, which ignored nothing at all.
+mappify.db
+mappify.db-shm
+mappify.db-wal
+.mbdump/
+.impeccable/
+out/
