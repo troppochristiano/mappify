@@ -23,7 +23,7 @@ import { beat, bye, armAutoQuit, graceMs } from './presence.js';
 import { createPlaylist } from './sources/spotify.js';
 import { indexInfo } from './mbindex.js';
 
-const PORT = Number(process.env.MAPPIFY_PORT ?? 8787);
+const PORT = Number(process.env.MAPPIFY_PORT ?? 6942);
 // Where the app itself lives. In production it is this same server, so the
 // default is our own public URL; tools/dev.js overrides it with the Vite port.
 const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? publicUrl();

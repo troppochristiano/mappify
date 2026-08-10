@@ -86,7 +86,7 @@ async function freePort(from) {
   throw new Error(`No free port between ${from} and ${from + 20}`);
 }
 
-const DEFAULT_API = 8787;
+const DEFAULT_API = 6942;
 const apiPort = process.env.MAPPIFY_PORT
   ? Number(process.env.MAPPIFY_PORT)
   : await freePort(DEFAULT_API);

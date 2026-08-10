@@ -24,7 +24,7 @@ DOMAIN="${1:-}"
 APP_USER="${APP_USER:-mappify}"
 APP_DIR="${APP_DIR:-/opt/mappify}"
 REPO="${REPO:-https://github.com/troppochristiano/mappify.git}"
-PORT=8787
+PORT=6942
 
 [[ $EUID -eq 0 ]] || { echo "run this with sudo" >&2; exit 1; }
 

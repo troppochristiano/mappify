@@ -23,7 +23,7 @@ import { rememberPending, claimPending, createSession } from './session.js';
 
 /** Where a browser reaches this instance. Localhost is the self-hoster default. */
 export const publicUrl = () =>
-  (process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${process.env.MAPPIFY_PORT ?? 8787}`).replace(
+  (process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${process.env.MAPPIFY_PORT ?? 6942}`).replace(
     /\/$/,
     ''
   );

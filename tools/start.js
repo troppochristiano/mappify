@@ -4,7 +4,7 @@
 // and wrong for someone who just wants to look at their music. This builds the
 // web app if it needs building, starts the server, and opens a browser at it.
 //
-// The redirect URI stays http://127.0.0.1:8787/api/auth/callback, which Spotify
+// The redirect URI stays http://127.0.0.1:6942/api/auth/callback, which Spotify
 // accepts precisely because it is loopback — that exemption is the whole reason
 // running this on your own machine needs no domain, no certificate and no
 // hosting.
@@ -17,7 +17,7 @@ import '../server/env.js';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 const DIST = path.join(ROOT, 'web', 'dist');
-const PORT = Number(process.env.MAPPIFY_PORT ?? 8787);
+const PORT = Number(process.env.MAPPIFY_PORT ?? 6942);
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const run = (cmd, args, cwd) => {

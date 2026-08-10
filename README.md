@@ -50,7 +50,7 @@ cd mappify
 npm start
 ```
 
-Either way it opens [127.0.0.1:8787](http://127.0.0.1:8787) in your browser.
+Either way it opens [127.0.0.1:6942](http://127.0.0.1:6942) in your browser.
 
 The app asks for one thing on first run: a **Spotify Client ID**. It walks you
 through getting one — create an app at
@@ -100,11 +100,11 @@ Three things it handles that a `.bat` could not:
   `CREATE_NO_WINDOW`.
 - **The server cannot be orphaned.** The child is assigned to a job object with
   `KILL_ON_JOB_CLOSE`, so ending the launcher — including from Task Manager —
-  takes the server with it. Otherwise it would sit holding port 8787 with no
+  takes the server with it. Otherwise it would sit holding port 6942 with no
   window, and the next launch would fail for no visible reason.
 - **Failures are readable.** With no console, output goes to
   `%APPDATA%\Mappify\launcher.log`, and a bad exit shows the tail of it in a
-  dialog. Port 8787 already in use is the common one.
+  dialog. Port 6942 already in use is the common one.
 
 ### Developing on it
 
@@ -112,9 +112,9 @@ Three things it handles that a `.bat` could not:
 npm run dev
 ```
 
-Two processes with hot reload: the API on 8787, Vite on 5273. If either port is
+Two processes with hot reload: the API on 6942, Vite on 5273. If either port is
 taken both move and the console says where — but an API on anything other than
-8787 no longer matches the redirect URI you registered, and Spotify will refuse
+6942 no longer matches the redirect URI you registered, and Spotify will refuse
 the sign-in.
 
 ## Optional: hosting it for other people
