@@ -230,6 +230,7 @@ export const api = {
   setup: () => get<SetupInfo>('/api/setup'),
   connect: () => get<{ authUrl: string }>('/api/auth/connect'),
   logout: () => get<{ signedIn: false }>('/api/auth/logout'),
+  quit: () => get<{ stopping: boolean }>('/api/quit'),
   setClientId: (clientId: string) =>
     post<{ clientId: string; redirectUri: string }>('/api/config/client-id', { clientId }),
   importStatus: () => get<ImportStatus>('/api/import/status'),

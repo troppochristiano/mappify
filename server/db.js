@@ -4,6 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
@@ -16,7 +17,41 @@ export const DB_PATH = process.env.MAPPIFY_DB ?? path.join(ROOT, 'mappify.db');
 // forty that do not. openUserDb(id) cannot leak by omission: there is nothing in
 // the file to leak. The MusicBrainz index stays global and shared — it holds
 // facts about artists, not about people.
-export const DATA_DIR = process.env.MAPPIFY_DATA ?? path.join(ROOT, 'data');
+
+/**
+ * Where the databases live, resolved in this order:
+ *
+ *   1. MAPPIFY_DATA, for anyone who wants to say
+ *   2. an existing `data/` beside the app — a checkout, or an install that
+ *      predates this. Never stranded: someone's library does not move because
+ *      they updated
+ *   3. the per-user application data directory
+ *
+ * Three exists because an installed application cannot write next to its own
+ * executable: Program Files is read-only for anything but an installer, so the
+ * old default failed the moment this stopped being a folder you unzipped.
+ *
+ * `index.db` deliberately does not live here. It is opened read-only and never
+ * written, so it stays beside the app where the installer put it.
+ */
+function defaultDataDir() {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA ?? os.homedir(), 'Mappify');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Mappify');
+  }
+  return path.join(
+    process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'),
+    'mappify'
+  );
+}
+
+const LEGACY_DATA = path.join(ROOT, 'data');
+
+export const DATA_DIR =
+  process.env.MAPPIFY_DATA ??
+  (fs.existsSync(path.join(LEGACY_DATA, 'control.db')) ? LEGACY_DATA : defaultDataDir());
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;

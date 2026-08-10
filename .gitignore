@@ -11,3 +11,6 @@ data/
 .mbdump/
 .impeccable/
 out/
+
+# Rust build output for the Windows launcher.
+launcher/target/

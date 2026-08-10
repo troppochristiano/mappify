@@ -1,0 +1,29 @@
+[package]
+name = "mappify-launcher"
+version = "0.1.0"
+edition = "2021"
+description = "Double-click launcher for Mappify"
+
+# The binary is what users see, so it is named for the app rather than the crate.
+[[bin]]
+name = "Mappify"
+path = "src/main.rs"
+
+[dependencies]
+# Only for the two things std cannot do on Windows: a message box (there is no
+# console to print to) and a job object (so the server cannot outlive us).
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  # CreateJobObjectW takes SECURITY_ATTRIBUTES, and without this feature the
+  # function is gated out of the crate entirely.
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

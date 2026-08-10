@@ -14,16 +14,18 @@ library never leaves the machine.
 [Releases](https://github.com/troppochristiano/mappify/releases), unzip it, and
 open **Mappify**. Nothing to install — the runtime is inside.
 
-> **On Windows, unblock the zip before extracting it**: right-click the `.zip` →
-> Properties → tick **Unblock** → OK. Windows marks every file that comes out of
-> a downloaded archive, and a marked `.bat` is refused outright, often with no
-> "run anyway" to click. Already extracted? `Get-ChildItem <folder> -Recurse
-> -File | Unblock-File` fixes it in place.
->
-> **On macOS**, right-click **Mappify.command** → *Open*, then *Open* again.
-> Once, not every time.
->
-> Neither system trusts the download because it is not code-signed.
+> The download is not code-signed, so the first launch needs one click past a
+> warning. **Windows**: SmartScreen says "unidentified developer" — *More info* →
+> *Run anyway*. **macOS**: right-click **Mappify.command** → *Open*, then *Open*.
+> Once each, not every time.
+
+No console window opens, and nothing is left behind in a terminal. Mappify keeps
+running after you close the browser tab — **Quit Mappify** in the library panel
+stops it.
+
+Your databases live in `%APPDATA%\Mappify` on Windows,
+`~/Library/Application Support/Mappify` on macOS, and `$XDG_DATA_HOME/mappify` on
+Linux — not next to the app, which may be somewhere unwritable.
 
 Or from the source, if you have **Node 22+** (24 recommended: `node:sqlite` runs
 unflagged):
@@ -62,6 +64,33 @@ minutes it would cost to ask MusicBrainz artist by artist.
 
 Back up `data/` if you have pinned any artists by hand; everything else in there
 can be rebuilt by importing again.
+
+### Building the Windows launcher
+
+`Mappify.exe` is a ~300 KB Rust binary in [`launcher/`](launcher) whose whole job
+is to start the Node server without a console window and make sure it cannot
+outlive itself. All the behaviour is still in `tools/start.js`.
+
+```bash
+cargo build --release --manifest-path launcher/Cargo.toml
+```
+
+It needs the MSVC toolchain (Visual Studio Build Tools, "Desktop development with
+C++"). Without it, `rustup toolchain install stable-x86_64-pc-windows-gnu` and
+`--target x86_64-pc-windows-gnu` builds the same binary with no Visual Studio.
+CI builds the MSVC one; the release workflow does this automatically.
+
+Three things it handles that a `.bat` could not:
+
+- **No console.** It is a windows-subsystem binary and spawns Node with
+  `CREATE_NO_WINDOW`.
+- **The server cannot be orphaned.** The child is assigned to a job object with
+  `KILL_ON_JOB_CLOSE`, so ending the launcher — including from Task Manager —
+  takes the server with it. Otherwise it would sit holding port 8787 with no
+  window, and the next launch would fail for no visible reason.
+- **Failures are readable.** With no console, output goes to
+  `%APPDATA%\Mappify\launcher.log`, and a bad exit shows the tail of it in a
+  dialog. Port 8787 already in use is the common one.
 
 ### Developing on it
 

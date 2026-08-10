@@ -27,6 +27,8 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
       window.location.href = authUrl
     },
   })
+  // No onSuccess invalidation: the server is gone, so there is nothing to refetch.
+  const quit = useMutation({ mutationFn: api.quit })
   const startImport = useMutation({
     mutationFn: api.startImport,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['import-status'] }),
@@ -140,6 +142,23 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
               )}
             </div>
           )}
+        </>
+      )}
+
+      {/* A double-clickable build has no console to close and no window of its
+          own, so without this the only way to stop it is Task Manager — and
+          closing the tab would leave a server running invisibly. Hidden on a
+          hosted instance, where the caller is not the one running it. */}
+      {setup.data?.local && (
+        <>
+          <h2 style={{ marginTop: 20 }}>Quit</h2>
+          <p className="panel-sub">
+            Mappify keeps running in the background while this tab is open.
+            Closing the tab does not stop it.
+          </p>
+          <button className="ghost" onClick={() => quit.mutate()} disabled={quit.isPending}>
+            {quit.isSuccess ? 'stopped — you can close this tab' : 'Quit Mappify'}
+          </button>
         </>
       )}
     </div>

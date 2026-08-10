@@ -4,4 +4,3 @@
 *.sh      text eol=lf
 *.service text eol=lf
 *.command text eol=lf
-Mappify.bat text eol=crlf

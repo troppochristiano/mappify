@@ -600,6 +600,23 @@ const routes = {
   // since it is the one other route that has to write a cookie header.
   '/api/auth/logout': () => ({ signedIn: false }),
 
+  /**
+   * Stop the application.
+   *
+   * A double-clickable build has no console to close, so without this the only
+   * way to stop it is Task Manager — and closing the browser tab would leave a
+   * server running invisibly for the rest of the session.
+   *
+   * Loopback only. That is the same trust boundary as being able to launch it:
+   * someone at this machine. On a hosted instance the caller is not local and
+   * this does nothing, which is what stops a visitor shutting down the host.
+   */
+  '/api/quit': () => {
+    if (!LOOPBACK) throw new Error('This instance is not running locally.');
+    setTimeout(() => process.exit(0), 150); // let the response finish first
+    return { stopping: true };
+  },
+
   '/api/import': () => {
     if (importStatus().running) return importStatus();
     runImport().catch(() => {}); // errors surface through /api/import/status
@@ -733,6 +750,9 @@ const PUBLIC = new Set([
   '/api/auth/connect',
   '/api/auth/callback',
   '/api/config/client-id',
+  // Quitting has to work from the sign-in screen too, before anyone has a
+  // session. Its own guard is that the request came from this machine.
+  '/api/quit',
 ]);
 
 /**

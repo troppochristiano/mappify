@@ -93,6 +93,14 @@ jobs:
             echo "::warning::origins against MusicBrainz at 1 req/s instead of instantly."
           fi
 
+      # Windows gets a real executable rather than a .bat: a .bat carrying Mark
+      # of the Web — which everything extracted from a downloaded zip carries —
+      # is refused outright, usually with nothing to click. The launcher is also
+      # a windows-subsystem binary, so there is no console window at all.
+      - name: Build the launcher
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --manifest-path launcher/Cargo.toml
+
       - name: Assemble
         shell: bash
         run: |
@@ -102,7 +110,7 @@ jobs:
           [ -d node_modules ] && cp -r node_modules out/Mappify/ || true
           [ -f index.db ] && cp index.db out/Mappify/ || true
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp Mappify.bat out/Mappify/
+            cp launcher/target/release/Mappify.exe out/Mappify/
           else
             cp Mappify.command out/Mappify/
             chmod +x out/Mappify/Mappify.command
@@ -139,19 +147,14 @@ jobs:
             after this was built is looked up live instead, which is slower but
             still works.
 
-            ### Windows: unblock the zip *before* you unzip it
+            ### Windows
 
-            Right-click the downloaded **.zip** → **Properties** → tick
-            **Unblock** → OK. Then extract and open **Mappify**.
+            Unzip and double-click **Mappify.exe**. SmartScreen will say it is
+            from an unidentified developer: **More info** → **Run anyway**. Once,
+            not every time.
 
-            Windows marks everything that comes out of a downloaded zip, and a
-            marked `.bat` is refused outright — often with no "run anyway" option
-            at all. Unblocking the zip first clears every file inside it. If you
-            already extracted, this fixes it without starting over:
-
-            ```powershell
-            Get-ChildItem "$env:USERPROFILE\Downloads\mappify-windows-x64" -Recurse -File | Unblock-File
-            ```
+            No console window appears. Mappify keeps running after you close the
+            browser tab — there is a **Quit Mappify** button in the library panel.
 
             ### macOS
 
