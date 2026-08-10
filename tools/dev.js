@@ -23,11 +23,16 @@ if (!fs.existsSync(path.join(ROOT, 'web', 'node_modules'))) {
 }
 
 const children = [];
-const start = (name, command, args, cwd) => {
+const start = (name, command, args, cwd, env = process.env) => {
   const child = spawn(command, args, {
     cwd,
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: process.platform === 'win32', // npm is a .cmd shim on Windows
+    // Only npm needs it, because it is a .cmd shim on Windows and cmd is what
+    // knows how to run one. Never for node: with shell:true the arguments are
+    // concatenated unquoted, so a default install path splits at the space and
+    // the child dies on "C:\Program is not recognised".
+    shell: process.platform === 'win32' && command === 'npm',
   });
   const tag = (line) => `[${name}] ${line}`;
   for (const stream of [child.stdout, child.stderr]) {
@@ -59,8 +64,55 @@ function stopAll() {
 process.on('SIGINT', stopAll);
 process.on('SIGTERM', stopAll);
 
-start('api', process.execPath, [path.join(ROOT, 'server', 'api.js')], ROOT);
-start('web', 'npm', ['run', 'dev'], path.join(ROOT, 'web'));
+/**
+ * The first free port at or above `from`.
+ *
+ * A second copy of Mappify on one machine — another branch, another agent —
+ * otherwise dies on EADDRINUSE for a port it does not actually care about. An
+ * explicit MAPPIFY_PORT is never overridden, because someone who names a port
+ * usually needs that exact one.
+ */
+async function freePort(from) {
+  const net = await import('node:net');
+  for (let port = from; port < from + 20; port++) {
+    const free = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.once('error', () => resolve(false));
+      probe.once('listening', () => probe.close(() => resolve(true)));
+      probe.listen(port, '127.0.0.1');
+    });
+    if (free) return port;
+  }
+  throw new Error(`No free port between ${from} and ${from + 20}`);
+}
 
-console.log('\n  api  http://127.0.0.1:8787');
-console.log('  app  http://localhost:5273\n');
+const DEFAULT_API = 8787;
+const apiPort = process.env.MAPPIFY_PORT
+  ? Number(process.env.MAPPIFY_PORT)
+  : await freePort(DEFAULT_API);
+const webPort = Number(process.env.PORT ?? 5273);
+
+const env = {
+  ...process.env,
+  MAPPIFY_PORT: String(apiPort),
+  // The proxy has to point at the API we actually started, not the default.
+  VITE_API_TARGET: `http://127.0.0.1:${apiPort}`,
+  PORT: String(webPort),
+};
+
+start('api', process.execPath, [path.join(ROOT, 'server', 'api.js')], ROOT, env);
+start('web', 'npm', ['run', 'dev'], path.join(ROOT, 'web'), env);
+
+console.log(`\n  api  http://127.0.0.1:${apiPort}`);
+console.log(`  app  http://localhost:${webPort}\n`);
+
+// The redirect URI registered with Spotify names a port. On any other one the
+// sign-in will be refused by Spotify rather than by this code, so say it here
+// rather than leaving it to be discovered at the end of the flow.
+if (apiPort !== DEFAULT_API) {
+  console.log(
+    `  note: the api is on ${apiPort}, not ${DEFAULT_API}, so Spotify sign-in will be\n` +
+      `  refused unless http://127.0.0.1:${apiPort}/api/auth/callback is also registered\n` +
+      `  in your app at developer.spotify.com.\n`
+  );
+}
