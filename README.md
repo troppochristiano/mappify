@@ -19,10 +19,19 @@ open **Mappify**. Nothing to install — the runtime is inside.
 > *Run anyway*. **macOS**: right-click **Mappify.command** → *Open*, then *Open*.
 > Once each, not every time.
 
-No console window opens, and nothing is left behind in a terminal. Close the last
-tab and Mappify stops on its own about a minute later — unless an import is still
-running, in which case it finishes first. **Quit Mappify** in the library panel is
-the impatient version.
+It opens in **its own window** — no tabs, no address bar, its own taskbar icon.
+That is a Chromium app window (`--app=`), using the browser you already have and
+its normal profile, so you stay signed in and the embedded player still works. If
+there is no Chromium on the machine it falls back to a normal browser tab.
+
+No console window opens, and nothing is left behind in a terminal. Close the
+window and Mappify stops on its own about a minute later — unless an import is
+still running, in which case it finishes first. **Quit Mappify** in the library
+panel is the impatient version.
+
+**You stay signed in.** The session cookie lasts 30 days and the Spotify tokens
+live in your library file, so closing and reopening lands you back on your globe.
+Even after that, reconnecting is one click and does not re-import anything.
 
 It never takes over Spotify playback anywhere else, either. The token it asks for
 has no playback scopes at all, and audio only plays in an embedded Spotify player

@@ -73,12 +73,54 @@ if (fromSource) {
 
 const url = process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${PORT}`;
 
+/**
+ * A Chromium that can open a window with no tab strip and no address bar.
+ *
+ * `--app=` is the whole trick: the same browser you already have, minus the
+ * browser. It gets its own taskbar entry and its own icon, and looks like an
+ * application rather than a page.
+ *
+ * Deliberately the normal profile, not a private one: the session cookie and
+ * whatever Spotify login you already have live there, so it opens signed in and
+ * the embedded player can play full tracks. A separate profile would look
+ * identical and ask you to sign into everything again.
+ */
+function findAppBrowser() {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+          `${process.env.ProgramFiles}\\Google\\Chrome\\Application\\chrome.exe`,
+          `${process.env['ProgramFiles(x86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+          `${process.env['ProgramFiles(x86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
+          `${process.env.ProgramFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          ]
+        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge'];
+
+  return candidates.find((p) => p && fs.existsSync(p)) ?? null;
+}
+
 const openBrowser = () => {
-  const open =
-    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
-    : process.platform === 'darwin' ? ['open', [url]]
-    : ['xdg-open', [url]];
+  const app = findAppBrowser();
   try {
+    if (app) {
+      spawn(app, [`--app=${url}`, '--window-size=1280,820'], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      return;
+    }
+    // No Chromium anywhere — a tab in whatever they use is still the app.
+    const open =
+      process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+      : process.platform === 'darwin' ? ['open', [url]]
+      : ['xdg-open', [url]];
     spawn(open[0], open[1], { detached: true, stdio: 'ignore' }).unref();
   } catch {
     /* the URL is printed either way */

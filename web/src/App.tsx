@@ -27,7 +27,16 @@ export default function App() {
   const isGlobe = useLocation().pathname === '/'
   // /api/setup is the one route that answers without a session, so it is what
   // decides whether there is a library to draw at all. Everything else 401s.
-  const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
+  const setup = useQuery({
+    queryKey: ['setup'],
+    queryFn: api.setup,
+    // Poll while there is nothing to draw yet. Sign-in leaves this window — the
+    // Spotify consent page, then the callback — and in an app-mode window that
+    // round trip can finish somewhere else entirely. The cookie is shared either
+    // way, so noticing it is all that is needed to flip to the globe by itself
+    // rather than leaving someone looking at a stale Connect button.
+    refetchInterval: (q) => (q.state.data?.signedIn ? false : 2000),
+  })
 
   // Both above the early returns below — hooks cannot be conditional, and the
   // heartbeat has to keep going on the sign-in and first-run screens too, since
