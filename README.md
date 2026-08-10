@@ -10,15 +10,25 @@ turn any place into a playlist.
 It runs on your own computer. Nothing to host, nothing to pay for, and your
 library never leaves the machine.
 
+**Download** the file for your computer from
+[Releases](https://github.com/troppochristiano/mappify/releases), unzip it, and
+open **Mappify**. Nothing to install — the runtime is inside.
+
+> Your computer will warn you that this is from an unidentified developer, since
+> the download is not code-signed. On Windows: *More info → Run anyway*. On macOS:
+> right-click **Mappify.command** → *Open*, then *Open* again. Once, not
+> every time.
+
+Or from the source, if you have **Node 22+** (24 recommended: `node:sqlite` runs
+unflagged):
+
 ```bash
 git clone https://github.com/troppochristiano/mappify.git
 cd mappify
 npm start
 ```
 
-That installs what it needs, builds, starts, and opens
-[127.0.0.1:8787](http://127.0.0.1:8787) in your browser. Requires **Node 22+**
-(24 recommended: `node:sqlite` runs unflagged).
+Either way it opens [127.0.0.1:8787](http://127.0.0.1:8787) in your browser.
 
 The app asks for one thing on first run: a **Spotify Client ID**. It walks you
 through getting one — create an app at

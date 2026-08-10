@@ -1,0 +1,113 @@
+# Builds a download-and-double-click bundle for each platform.
+#
+# Each zip contains the app, its dependencies, the built web front end, and a
+# copy of the Node runtime — so someone who has never heard of npm unzips it,
+# double-clicks Mappify, and has a globe. Nothing to install.
+#
+# Why one runner per platform rather than three zips from one: the dependency
+# tree can resolve platform-specific optional packages, and npm only picks the
+# right ones on the platform it is installing for. Building all three on Linux
+# produces two bundles that fail on first launch.
+#
+# Trigger with a tag:  git tag v0.1.0 && git push --tags
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            node: node-v22.14.0-win-x64
+            ext: zip
+          - os: macos-latest
+            name: macos-arm64
+            node: node-v22.14.0-darwin-arm64
+            ext: tar.gz
+          - os: ubuntu-latest
+            name: linux-x64
+            node: node-v22.14.0-linux-x64
+            ext: tar.xz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install and build
+        run: |
+          npm install --omit=dev
+          npm run build
+
+      - name: Fetch the Node runtime to ship
+        shell: bash
+        run: |
+          curl -fsSLO "https://nodejs.org/dist/v22.14.0/${{ matrix.node }}.${{ matrix.ext }}"
+          mkdir -p runtime
+          if [[ "${{ matrix.ext }}" == "zip" ]]; then
+            unzip -q "${{ matrix.node }}.zip"
+            # Windows keeps node.exe at the top of the archive, not in bin/.
+            cp "${{ matrix.node }}/node.exe" runtime/
+          else
+            tar -xf "${{ matrix.node }}.${{ matrix.ext }}"
+            mkdir -p runtime/bin
+            cp "${{ matrix.node }}/bin/node" runtime/bin/
+          fi
+
+      - name: Assemble
+        shell: bash
+        run: |
+          mkdir -p out/Mappify
+          cp -r server tools web/dist runtime package.json README.md out/Mappify/
+          mkdir -p out/Mappify/web && mv out/Mappify/dist out/Mappify/web/dist
+          [ -d node_modules ] && cp -r node_modules out/Mappify/ || true
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp Mappify.bat out/Mappify/
+          else
+            cp Mappify.command out/Mappify/
+            chmod +x out/Mappify/Mappify.command
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          cd out
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a -tzip "../mappify-${{ matrix.name }}.zip" Mappify >/dev/null
+          else
+            zip -qr "../mappify-${{ matrix.name }}.zip" Mappify
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mappify-${{ matrix.name }}
+          path: mappify-${{ matrix.name }}.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mappify-${{ matrix.name }}.zip
+          body: |
+            Download the file for your computer, unzip it, and open **Mappify**.
+
+            Nothing to install — the runtime is inside.
+
+            Your computer will warn you that this is from an unidentified
+            developer, because the download is not code-signed (a certificate
+            costs a few hundred a year, and this is a personal project).
+
+            - **Windows**: More info → Run anyway
+            - **macOS**: right-click Mappify.command → Open, then Open again
