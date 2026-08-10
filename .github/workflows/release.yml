@@ -57,7 +57,10 @@ jobs:
           curl -fsSLO "https://nodejs.org/dist/v22.14.0/${{ matrix.node }}.${{ matrix.ext }}"
           mkdir -p runtime
           if [[ "${{ matrix.ext }}" == "zip" ]]; then
-            unzip -q "${{ matrix.node }}.zip"
+            # 7z, not unzip: the bash on a Windows runner is Git Bash, which does
+            # not ship unzip. 7z is on the image and is what the packaging step
+            # below already uses.
+            7z x -y "${{ matrix.node }}.zip" >/dev/null
             # Windows keeps node.exe at the top of the archive, not in bin/.
             cp "${{ matrix.node }}/node.exe" runtime/
           else
