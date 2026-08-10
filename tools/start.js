@@ -72,6 +72,58 @@ if (fromSource) {
 }
 
 const url = process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${PORT}`;
+
+const openBrowser = () => {
+  const open =
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+    : process.platform === 'darwin' ? ['open', [url]]
+    : ['xdg-open', [url]];
+  try {
+    spawn(open[0], open[1], { detached: true, stdio: 'ignore' }).unref();
+  } catch {
+    /* the URL is printed either way */
+  }
+};
+
+/**
+ * Double-clicking the icon twice should show you Mappify, not an error.
+ *
+ * The port cannot simply move: it is written into the redirect URI Spotify has
+ * on file, so a second copy on another port could not sign anyone in. What a
+ * second launch should do is bring up the one already running — and if the port
+ * belongs to something else entirely, say so rather than failing on EADDRINUSE
+ * with a stack trace nobody outside this repository can read.
+ */
+const net = await import('node:net');
+const portFree = await new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.once('error', () => resolve(false));
+  probe.once('listening', () => probe.close(() => resolve(true)));
+  probe.listen(PORT, '127.0.0.1');
+});
+
+if (!portFree) {
+  const isMappify = await fetch(`http://127.0.0.1:${PORT}/api/setup`, {
+    signal: AbortSignal.timeout(1500),
+  })
+    .then((r) => r.ok)
+    .catch(() => false);
+
+  if (isMappify) {
+    console.log(`\n  Mappify is already running at ${url} — opening it.\n`);
+    openBrowser();
+    process.exit(0);
+  }
+
+  console.error(
+    `\n  Something else is using port ${PORT}, and Mappify needs that one:\n` +
+      `  it is written into the redirect URI Spotify has on file, so moving to\n` +
+      `  another port would break signing in.\n\n` +
+      `  Close whatever is on ${PORT} and try again.\n`
+  );
+  process.exit(1);
+}
+
 const server = spawn(process.execPath, [path.join(ROOT, 'server', 'api.js')], {
   cwd: ROOT,
   stdio: 'inherit',
@@ -84,13 +136,5 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => server.kill());
 // milliseconds, and a browser that opens fractionally early just retries.
 setTimeout(() => {
   console.log(`\n  Mappify is at ${url}\n`);
-  const open =
-    process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
-    : process.platform === 'darwin' ? ['open', [url]]
-    : ['xdg-open', [url]];
-  try {
-    spawn(open[0], open[1], { detached: true, stdio: 'ignore' }).unref();
-  } catch {
-    /* the URL is printed above either way */
-  }
+  openBrowser();
 }, 700);
