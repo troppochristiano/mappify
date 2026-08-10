@@ -1,0 +1,5 @@
+# These are checked out on a Linux VM and executed. Committed from Windows they
+# would otherwise arrive with CRLF, and a shell script with CRLF fails on its own
+# shebang: "/bin/bash^M: bad interpreter".
+*.sh      text eol=lf
+*.service text eol=lf

@@ -98,6 +98,9 @@ const env = {
   // The proxy has to point at the API we actually started, not the default.
   VITE_API_TARGET: `http://127.0.0.1:${apiPort}`,
   PORT: String(webPort),
+  // In development the app is Vite's, not ours — the API only serves it in
+  // production, so it has to be told where to send someone after a sign-in.
+  MAPPIFY_WEB: process.env.MAPPIFY_WEB ?? `http://localhost:${webPort}`,
 };
 
 start('api', process.execPath, [path.join(ROOT, 'server', 'api.js')], ROOT, env);

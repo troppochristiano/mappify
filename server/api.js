@@ -15,12 +15,15 @@ import {
   REDIRECT_URI,
 } from './auth.js';
 import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
+import { serveStatic, hasBuiltApp } from './static.js';
 import { runImport, status as importStatus, cancel as cancelImport } from './jobs.js';
 import { createPlaylist } from './sources/spotify.js';
 import { indexInfo } from './mbindex.js';
 
 const PORT = Number(process.env.MAPPIFY_PORT ?? 8787);
-const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? 'http://127.0.0.1:5273';
+// Where the app itself lives. In production it is this same server, so the
+// default is our own public URL; tools/dev.js overrides it with the Vite port.
+const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? publicUrl();
 // Loopback unless told otherwise. A hosted instance sets MAPPIFY_HOST=0.0.0.0,
 // which is a decision to expose the thing and should have to be made on purpose.
 const HOST = process.env.MAPPIFY_HOST ?? '127.0.0.1';
@@ -767,6 +770,10 @@ const server = http.createServer(async (req, res) => {
 
   const handler = routes[url.pathname];
   if (!handler) {
+    // Anything that is not an API route is the web app, when there is one built.
+    // Kept below the route table so a typo in an /api path still says so rather
+    // than silently returning index.html and looking like a client bug.
+    if (!url.pathname.startsWith('/api/') && serveStatic(req, res, url.pathname)) return;
     res.writeHead(404).end(JSON.stringify({ error: 'no such route', known: Object.keys(routes) }));
     return;
   }
@@ -802,5 +809,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`mappify api  ${publicUrl()}  (listening on ${HOST}:${PORT})`);
   console.log(`spotify redirect URI: ${REDIRECT_URI}`);
-  console.log(`routes: ${Object.keys(routes).join('  ')}`);
+  console.log(
+    hasBuiltApp()
+      ? 'serving the built web app from web/dist'
+      : 'no web/dist — API only (npm run build to serve the app from here)'
+  );
 });

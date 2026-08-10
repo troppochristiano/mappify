@@ -24,7 +24,7 @@ Requires **Node 22+** (24 recommended: `node:sqlite` runs unflagged).
 
 1. **Register a Spotify app** at
    [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
-   - Redirect URI must be exactly `http://127.0.0.1:8888/callback`.
+   - Redirect URI must be exactly `http://127.0.0.1:8787/api/auth/callback`.
      Spotify rejects `localhost` for loopback; it has to be the IP.
    - Tick **Web API**.
    - Add the Spotify accounts that will use it (up to five, including yours).
@@ -45,8 +45,69 @@ Requires **Node 22+** (24 recommended: `node:sqlite` runs unflagged).
    ```
 
    The API starts on 8787, the app on 5273. Open
-   [localhost:5273](http://localhost:5273), click **library**, connect Spotify,
-   and import.
+   [localhost:5273](http://localhost:5273), connect Spotify, and import. If
+   either port is taken, both move and the console says where — but the API on
+   anything other than 8787 means the redirect URI no longer matches the one you
+   registered, and Spotify will refuse the sign-in.
+
+## Hosting it for other people
+
+Everyone gets their own map. Each account that signs in gets its own database
+under `data/`, and its own Spotify tokens; nobody can see anyone else's library.
+
+The five-account cap is per Spotify **application**, so this is the pattern: one
+person hosts, registers their own app, and adds up to five friends' emails. Every
+group runs its own copy and gets its own five slots.
+
+### On a free Google Cloud VM
+
+An `e2-micro` in `us-west1`, `us-central1` or `us-east1` is always-free and more
+than this needs. Anything else running Debian or Ubuntu works identically.
+
+1. Create the VM (`e2-micro`, Debian 12, allow HTTP and HTTPS traffic).
+2. Point a domain at its external IP with an `A` record. It has to be a real
+   domain: Spotify only allows `http://` redirect URIs for loopback, so a bare
+   IP cannot be used and HTTPS is not optional.
+3. SSH in and run:
+
+   ```bash
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/troppochristiano/mappify/main/deploy/setup.sh)" -- mappify.example.com
+   ```
+
+   That installs Node 22, adds swap (1 GB of RAM is not quite enough to build the
+   web app), installs Caddy for automatic HTTPS, builds, and registers a systemd
+   service that restarts on crash and comes back after a reboot.
+
+4. Put your `SPOTIFY_CLIENT_ID` in `/opt/mappify/.env`, then
+   `sudo systemctl restart mappify`.
+5. In the Spotify dashboard, add `https://mappify.example.com/api/auth/callback`
+   as a redirect URI, and add each person under **Users and Access**.
+
+Then send people the URL. They click **Connect Spotify**, approve, and land on
+their own empty globe ready to import.
+
+```bash
+sudo journalctl -u mappify -f     # logs
+sudo systemctl restart mappify    # after changing .env
+```
+
+**Back up `data/`.** It holds every user's library and their refresh tokens. It
+is the only thing on that machine that cannot be rebuilt.
+
+### Running it anywhere else
+
+The server is one Node process and needs a writable disk — that rules out
+platforms with ephemeral filesystems, where every restart would delete everyone's
+library. Beyond that it only wants three things set:
+
+| variable | what it is for |
+| --- | --- |
+| `MAPPIFY_PUBLIC_URL` | the public `https://` address. Derives the redirect URI, and turns on the session cookie's `Secure` flag |
+| `MAPPIFY_HOST` | `0.0.0.0` to accept connections from outside the machine. `127.0.0.1` otherwise, which is the default |
+| `MAPPIFY_DATA` | where the per-user databases live. Defaults to `./data` |
+
+`npm run build` then `npm start` serves the app and the API from one origin, which
+is what keeps the session cookie first-party and CORS out of the picture.
 
 ## The origin index
 

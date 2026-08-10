@@ -1,0 +1,31 @@
+[Unit]
+Description=Mappify — a globe of your music
+Documentation=https://github.com/troppochristiano/mappify
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=/usr/bin/node server/api.js
+EnvironmentFile=__APP_DIR__/.env
+
+# Always online is the whole point: a crash, an OOM kill, or a reboot all end
+# with the service back up rather than with friends seeing nothing.
+Restart=always
+RestartSec=3
+
+# It only ever needs to write data/, and it is reachable from the internet.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__APP_DIR__/data
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mappify
+
+[Install]
+WantedBy=multi-user.target
