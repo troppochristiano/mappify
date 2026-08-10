@@ -115,23 +115,39 @@ can only carry one hop, and a county is usually not a MusicBrainz area at all.
 It fills itself for any area resolved from now on; the `--coords` backfill for
 the other 16k is not worth the SPARQL run.
 
-## 4. Origins during sync — half done
+## 4. Origins during sync — done
 
-The reading half is done: an import now pulls scene origins out of the index for
-free, so an artist someone has already resolved costs nothing. The retry and
-backoff the old note asked for is in too — the category fetch was answering
-bursts with an HTML rate-limit page, and 12 of 50 batches died silently on the
-first full run, each taking 20 artists with it.
+An import now reads scene origins out of the index for free, and works out
+whatever the index could not answer itself. The pass moved to `server/scenes.js`
+so the job and `tools/fix-artist-scenes.js` run exactly the same code; the CLI is
+a printer over it. Its header is where the rules and their known costs live.
 
-What is left is the *fetching* half: running the category pass during import for
-artists the index has never seen, then pushing what it learns back. Today that
-is a manual `node tools/fix-artist-scenes.js` followed by
-`node tools/push-derived.js`.
+Order inside an import: shared corrections, then areas, then place rows and
+chains, then shells folded in, then the scene pass over whatever is left. Only
+artists nobody has resolved reach that last step, so a second import costs
+nothing and a first one pays once.
 
-Worth deciding first whether it belongs in the import at all. It costs one
-Wikidata batch per 100 artists and one Wikipedia batch per 20, and the index now
-answers for everything already known — so the cost only lands on genuinely new
-artists, but it lands during an import the user is watching.
+**Bounded at 300 artists per import**, most-played first, `MAPPIFY_SCENES_LIMIT`
+to change it and `0` to turn it off. This is the only part of an import that
+scales with artists nobody has ever looked at — a fresh 2000-artist library would
+otherwise spend minutes on Wikipedia while someone watches a progress bar. What
+is left over is printed with the command that finishes the job, rather than
+quietly dropped. A failure here is caught and logged: the library is already in,
+and an enrichment must not fail an import.
+
+The retry and backoff the old note asked for is in too, and it mattered — the
+category fetch answers bursts with an HTML rate-limit page, and 12 of 50 batches
+died silently on the first full run, each taking 20 artists with it.
+
+One property worth knowing: **the pass converges rather than finishing.** Every
+run resolves containment chains on demand and leaves them behind, so the next run
+can judge candidates it previously had to refuse. A re-run right after the first
+93 moves found 23 more (Waka Flocka → Atlanta, Ecco2k → Stockholm). 171 artists
+now carry a scene origin. Re-running until it returns nothing is the honest way
+to finish.
+
+Anything derived locally is worth sending on with `node tools/push-derived.js`,
+which is still a maintainer step: a friend's install holds a read-only token.
 
 ## 5. Multi-tenancy
 

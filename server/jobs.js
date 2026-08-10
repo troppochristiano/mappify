@@ -13,6 +13,7 @@ import {
   syncDerivedPlaces,
   collapseWrappers,
 } from './places-sync.js';
+import { resolveScenes } from './scenes.js';
 import { lookupBySpotifyUrl, lookupArtist } from './musicbrainz.js';
 import {
   fetchLiked,
@@ -310,10 +311,47 @@ export async function runImport({ liveFallback = true } = {}) {
     }
 
     const collapse = collapseWrappers(db);
+
+    // Whatever the index could not answer, work out here — the categories pass
+    // that put 2Pac in Baltimore. Only artists nobody has resolved yet reach
+    // this, so a second import costs nothing and a first one pays once.
+    //
+    // Bounded, because this is the only part of an import that scales with
+    // artists nobody has ever looked at: a fresh 2000-artist library would spend
+    // minutes on Wikipedia while someone watches a progress bar. Most-played
+    // first, and what is left is said out loud rather than quietly dropped.
+    const sceneLimit = Number(process.env.MAPPIFY_SCENES_LIMIT ?? 300);
+    let sceneMoves = 0;
+    if (sceneLimit > 0) {
+      set({ phase: 'scenes', message: 'looking up where artists are from' });
+      try {
+        const scenes = await resolveScenes(db, {
+          limit: sceneLimit,
+          log: (m) => console.log(`  ${m}`),
+        });
+        sceneMoves = scenes.moved.length;
+        const left = db
+          .prepare(
+            `SELECT count(*) n FROM artists a
+              WHERE a.mbid IS NOT NULL AND a.mbid <> ''
+                AND a.origin_wiki_qid IS NULL AND a.origin_override_qid IS NULL
+                AND EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = a.spotify_id)`
+          )
+          .get().n;
+        console.log(
+          `  ${scenes.moved.length} artist(s) moved to a scene` +
+            (left ? `; ${left} still unplaced — node tools/fix-artist-scenes.js covers the rest` : '')
+        );
+      } catch (err) {
+        // Never fail an import over an enrichment: the library is already in.
+        console.log(`  ! scene pass skipped: ${err.message}`);
+      }
+    }
+    const scenesTotal = artists.origins + sceneMoves;
     set({
       message:
         `${synced.places} places, ${collapse.collapsed} shells folded in` +
-        (artists.origins ? `, ${artists.origins} scene origins` : ''),
+        (scenesTotal ? `, ${scenesTotal} placed by scene` : ''),
     });
 
     reindexSearch(db);
