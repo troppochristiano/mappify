@@ -48,13 +48,27 @@ function needsBuild() {
   return newest(path.join(ROOT, 'web', 'src')) > built;
 }
 
-if (!fs.existsSync(path.join(ROOT, 'web', 'node_modules'))) {
-  console.log('Installing (once) …');
-  run(npm, ['install', '--prefix', path.join(ROOT, 'web'), '--silent'], ROOT);
-}
-if (needsBuild()) {
-  console.log('Building …');
-  run(npm, ['run', 'build', '--prefix', path.join(ROOT, 'web'), '--silent'], ROOT);
+// A download ships the built app and no sources, and has no npm to build with
+// either. Deciding on `web/src` rather than on some flag is what keeps the two
+// cases from needing separate launchers: source present means a developer, and
+// absent means someone who unzipped this and double-clicked it.
+const fromSource = fs.existsSync(path.join(ROOT, 'web', 'src'));
+
+if (fromSource) {
+  if (!fs.existsSync(path.join(ROOT, 'web', 'node_modules'))) {
+    console.log('Installing (once) …');
+    run(npm, ['install', '--prefix', path.join(ROOT, 'web'), '--silent'], ROOT);
+  }
+  if (needsBuild()) {
+    console.log('Building …');
+    run(npm, ['run', 'build', '--prefix', path.join(ROOT, 'web'), '--silent'], ROOT);
+  }
+} else if (!fs.existsSync(path.join(DIST, 'index.html'))) {
+  console.error(
+    '\n  This copy is missing its web/dist folder, so there is nothing to show.\n' +
+      '  The download is incomplete — unzip it again, or grab it afresh.\n'
+  );
+  process.exit(1);
 }
 
 const url = process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${PORT}`;
