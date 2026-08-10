@@ -139,9 +139,25 @@ jobs:
             after this was built is looked up live instead, which is slower but
             still works.
 
-            Your computer will warn you that this is from an unidentified
-            developer, because the download is not code-signed (a certificate
-            costs a few hundred a year, and this is a personal project).
+            ### Windows: unblock the zip *before* you unzip it
 
-            - **Windows**: More info → Run anyway
-            - **macOS**: right-click Mappify.command → Open, then Open again
+            Right-click the downloaded **.zip** → **Properties** → tick
+            **Unblock** → OK. Then extract and open **Mappify**.
+
+            Windows marks everything that comes out of a downloaded zip, and a
+            marked `.bat` is refused outright — often with no "run anyway" option
+            at all. Unblocking the zip first clears every file inside it. If you
+            already extracted, this fixes it without starting over:
+
+            ```powershell
+            Get-ChildItem "$env:USERPROFILE\Downloads\mappify-windows-x64" -Recurse -File | Unblock-File
+            ```
+
+            ### macOS
+
+            Right-click **Mappify.command** → **Open**, then **Open** again. Once,
+            not every time.
+
+            Neither system trusts this because the download is not code-signed —
+            a certificate costs a few hundred a year, and this is a personal
+            project.

@@ -14,10 +14,16 @@ library never leaves the machine.
 [Releases](https://github.com/troppochristiano/mappify/releases), unzip it, and
 open **Mappify**. Nothing to install — the runtime is inside.
 
-> Your computer will warn you that this is from an unidentified developer, since
-> the download is not code-signed. On Windows: *More info → Run anyway*. On macOS:
-> right-click **Mappify.command** → *Open*, then *Open* again. Once, not
-> every time.
+> **On Windows, unblock the zip before extracting it**: right-click the `.zip` →
+> Properties → tick **Unblock** → OK. Windows marks every file that comes out of
+> a downloaded archive, and a marked `.bat` is refused outright, often with no
+> "run anyway" to click. Already extracted? `Get-ChildItem <folder> -Recurse
+> -File | Unblock-File` fixes it in place.
+>
+> **On macOS**, right-click **Mappify.command** → *Open*, then *Open* again.
+> Once, not every time.
+>
+> Neither system trusts the download because it is not code-signed.
 
 Or from the source, if you have **Node 22+** (24 recommended: `node:sqlite` runs
 unflagged):
