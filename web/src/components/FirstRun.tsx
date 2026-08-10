@@ -71,7 +71,7 @@ export function FirstRun({ redirectUri }: { redirectUri: string }) {
       >
         {save.isPending ? 'saving…' : 'Continue'}
       </button>
-      {save.isError && <p className="fine">{String(save.error).replace('Error: ', '')}</p>}
+      {save.isError && <p className="fine">{(save.error as Error).message}</p>}
 
       <p className="fine">
         Your library never leaves this computer. It is read from Spotify and kept

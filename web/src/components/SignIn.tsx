@@ -35,7 +35,7 @@ export function SignIn({ local }: { local: boolean }) {
           ? 'Sign in with the Spotify account you registered the app with. Your library stays on this computer.'
           : 'Spotify allows five accounts per app, and whoever runs this copy has to add yours by hand. If sign-in fails, that is almost always why — ask them to add your Spotify email.'}
       </p>
-      {connect.isError && <p className="fine">{String(connect.error)}</p>}
+      {connect.isError && <p className="fine">{(connect.error as Error).message}</p>}
     </div>
   )
 }

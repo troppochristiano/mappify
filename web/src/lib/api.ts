@@ -167,8 +167,33 @@ export class NotSignedIn extends Error {
 // every request cross-origin, and a cross-origin fetch sends no cookies unless
 // asked. Without this the app is permanently signed out in dev and fine in
 // production, which is the worst way to find out.
+/**
+ * Turns a dead server into a sentence somebody can act on.
+ *
+ * `fetch` rejects with a bare "TypeError: Failed to fetch" when there is nothing
+ * listening — which is what a window left open after Mappify has stopped shows
+ * on every click. The page is still on screen, so it looks like the app broke
+ * rather than like it is simply no longer running.
+ */
+class NotRunning extends Error {
+  constructor() {
+    super('Mappify is not running any more — close this window and open Mappify again.')
+    this.name = 'NotRunning'
+  }
+}
+
+const send = async (path: string, init?: RequestInit) => {
+  try {
+    return await fetch(path, { credentials: 'include', ...init })
+  } catch {
+    // The only way fetch rejects here is a transport failure: same origin, no
+    // CORS in play, so it means nothing is listening.
+    throw new NotRunning()
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: 'include' })
+  const res = await send(path)
   if (res.status === 401) throw new NotSignedIn()
   if (!res.ok) throw new Error(`${res.status} ${path}`)
   const json = await res.json()
@@ -177,9 +202,8 @@ async function get<T>(path: string): Promise<T> {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await send(path, {
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
