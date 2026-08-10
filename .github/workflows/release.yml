@@ -28,15 +28,15 @@ jobs:
         include:
           - os: windows-latest
             name: windows-x64
-            node: node-v22.14.0-win-x64
+            node: node-v24.14.0-win-x64
             ext: zip
           - os: macos-latest
             name: macos-arm64
-            node: node-v22.14.0-darwin-arm64
+            node: node-v24.14.0-darwin-arm64
             ext: tar.gz
           - os: ubuntu-latest
             name: linux-x64
-            node: node-v22.14.0-linux-x64
+            node: node-v24.14.0-linux-x64
             ext: tar.xz
     runs-on: ${{ matrix.os }}
 
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install and build
         run: |
@@ -54,7 +54,7 @@ jobs:
       - name: Fetch the Node runtime to ship
         shell: bash
         run: |
-          curl -fsSLO "https://nodejs.org/dist/v22.14.0/${{ matrix.node }}.${{ matrix.ext }}"
+          curl -fsSLO "https://nodejs.org/dist/v24.14.0/${{ matrix.node }}.${{ matrix.ext }}"
           mkdir -p runtime
           if [[ "${{ matrix.ext }}" == "zip" ]]; then
             # 7z, not unzip: the bash on a Windows runner is Git Bash, which does

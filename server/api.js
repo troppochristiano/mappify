@@ -3,7 +3,7 @@
 
 import './env.js';
 import http from 'node:http';
-import { openUserDb } from './db.js';
+import { openUserDb, hasFts } from './db.js';
 import { runAsUser, currentDb, currentUserId } from './context.js';
 import {
   authStatus,
@@ -171,15 +171,23 @@ const routes = {
     const where = [];
     const params = [];
     if (q) {
-      // Prefix-match the last token so typing feels live.
-      const match = q
-        .split(/\s+/)
-        .map((tok) => tok.replace(/["*]/g, ''))
-        .filter(Boolean)
-        .map((tok) => `"${tok}"*`)
-        .join(' ');
-      where.push('a.spotify_id IN (SELECT spotify_id FROM artist_search WHERE artist_search MATCH ?)');
-      params.push(match);
+      const tokens = q.split(/\s+/).map((tok) => tok.replace(/["*%_]/g, '')).filter(Boolean);
+      if (hasFts(currentDb())) {
+        // Prefix-match the last token so typing feels live.
+        where.push('a.spotify_id IN (SELECT spotify_id FROM artist_search WHERE artist_search MATCH ?)');
+        params.push(tokens.map((tok) => `"${tok}"*`).join(' '));
+      } else if (tokens.length) {
+        // No FTS5 in this runtime — Node only gained it in 24. Every token has to
+        // appear somewhere, which is the same "and" the MATCH above does, just
+        // scanned rather than indexed. At one person's library that is fine.
+        for (const tok of tokens) {
+          where.push(
+            `(a.name LIKE ? OR COALESCE(a.mb_city, a.wd_city, '') LIKE ?` +
+              ` OR COALESCE(a.mb_country, a.wd_country, '') LIKE ?)`
+          );
+          params.push(`%${tok}%`, `%${tok}%`, `%${tok}%`);
+        }
+      }
     }
     if (city) {
       where.push(`${CITY} = ?`);

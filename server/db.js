@@ -144,11 +144,50 @@ CREATE INDEX IF NOT EXISTS idx_artists_mbid    ON artists(mbid);
 CREATE INDEX IF NOT EXISTS idx_ta_artist       ON track_artists(artist_id);
 CREATE INDEX IF NOT EXISTS idx_ts_source       ON track_sources(source_id);
 
--- Artist-first search: results are artists, so the index is over artists.
+`;
+
+// Artist-first search: results are artists, so the index is over artists.
+//
+// Kept out of SCHEMA because it is the one statement that can fail on a working
+// Node. `node:sqlite` only gained FTS5 in Node 24 — on 22 this throws "no such
+// module: fts5", and inside SCHEMA that took the whole database down with it, so
+// signing in on a runtime without FTS5 failed at the point of creating the user's
+// file. Search falls back to LIKE, which is slower and perfectly usable at the
+// scale of one person's library.
+const SEARCH_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS artist_search USING fts5(
   spotify_id UNINDEXED, name, city, country, tokenize = 'unicode61'
 );
 `;
+
+let ftsAvailable;
+
+/**
+ * Creates the search index for this database, and reports whether it exists.
+ *
+ * The capability belongs to the runtime, so a "no" is remembered and never
+ * retried; the table itself still has to be created per database, which is why
+ * this runs the statement rather than only answering from the cache.
+ */
+export function hasFts(db) {
+  if (ftsAvailable === undefined) {
+    // Probed against a throwaway table in `temp`, not by trying to create the
+    // real one: `CREATE VIRTUAL TABLE IF NOT EXISTS` short-circuits when the
+    // table is already in the file, so on a database written by Node 24 and
+    // opened on Node 22 it reports success without ever loading the module — and
+    // search then failed at query time, which is the worst place to find out.
+    try {
+      db.exec('CREATE VIRTUAL TABLE temp.fts_probe USING fts5(x)');
+      db.exec('DROP TABLE temp.fts_probe');
+      ftsAvailable = true;
+    } catch {
+      ftsAvailable = false;
+    }
+  }
+  if (!ftsAvailable) return false;
+  db.exec(SEARCH_SCHEMA);
+  return true;
+}
 
 // Columns added after a database already exists. CREATE TABLE IF NOT EXISTS will
 // not add them, so they are applied explicitly and idempotently.
@@ -214,10 +253,21 @@ export function openDb(file = DB_PATH) {
 
   // fts5 tables cannot be ALTERed, so a column-set change means recreating it.
   // reindexSearch() below refills it from the artists table.
-  const ftsHasGenres = db
-    .prepare(`SELECT count(*) n FROM pragma_table_info('artist_search') WHERE name = 'genres'`)
-    .get().n;
-  if (ftsHasGenres) db.exec('DROP TABLE artist_search');
+  //
+  // In a try, because reading an fts5 table's columns needs the fts5 module, and
+  // a database written by Node 24 opened on Node 22 has the table but not the
+  // module. Unguarded, this threw inside openDb and took every route with it —
+  // the library would not even load, let alone search. Nothing to migrate on
+  // such a runtime anyway: it cannot have written the old shape either.
+  let ftsHasGenres = 0;
+  try {
+    ftsHasGenres = db
+      .prepare(`SELECT count(*) n FROM pragma_table_info('artist_search') WHERE name = 'genres'`)
+      .get().n;
+    if (ftsHasGenres) db.exec('DROP TABLE artist_search');
+  } catch {
+    ftsHasGenres = 0;
+  }
 
   db.exec(SCHEMA);
 
@@ -238,7 +288,11 @@ export function openDb(file = DB_PATH) {
              WHERE origin_resolved_at IS NULL AND genres_resolved_at IS NOT NULL`);
   }
 
-  if (ftsHasGenres) reindexSearch(db);
+  // After the columns exist, so a rebuild below has rows to read. A runtime
+  // without FTS5 simply gets no index and searches with LIKE instead.
+  const fts = hasFts(db);
+
+  if (fts && ftsHasGenres) reindexSearch(db);
   return db;
 }
 
@@ -360,6 +414,7 @@ export function openControlDb() {
 
 /** Rebuilds the FTS index from current rows. Cheap enough to just redo wholesale. */
 export function reindexSearch(db) {
+  if (!hasFts(db)) return;
   db.exec('DELETE FROM artist_search');
   db.exec(`
     INSERT INTO artist_search (spotify_id, name, city, country)
