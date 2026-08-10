@@ -50,6 +50,7 @@
  *   - A category naming a state beats a wrong city elsewhere: Khalid moves from
  *     Fort Stewart to Texas. Coarse, and truer than where he was.
  */
+import { userAgent } from './env.js';
 import { sparql } from './wikidata.js';
 import { resolveChains } from './admin-chain.js';
 import { buildContainment } from './containment.js';
@@ -65,9 +66,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MUSIC_ROLE =
   /^(Rappers|Musicians|Singers|Songwriters|Singer-songwriters|Record producers|Musical groups|Bands|Guitarists|Drummers|Bassists|Pianists|Keyboardists|Composers|DJs|Rock musicians|Jazz musicians|Electronic musicians|Hip hop|Hip-hop)/i;
 
-/** Wikimedia asks for a contact address in the User-Agent. */
-const userAgent = () =>
-  `mappify/0.1 (personal music map; ${process.env.MB_CONTACT ?? 'unknown-contact'})`;
 
 /**
  * @param {import('node:sqlite').DatabaseSync} db

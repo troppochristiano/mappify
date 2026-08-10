@@ -1,4 +1,5 @@
 import './env.js';
+import { userAgent } from './env.js';
 // Wikidata SPARQL fallback: bulk-resolve MBIDs that MusicBrainz has no area for.
 // P434 = MusicBrainz artist ID, P740 = location of formation, P19 = place of birth,
 // P17 = country of that place.
@@ -6,10 +7,6 @@ import './env.js';
 const ENDPOINT = 'https://query.wikidata.org/sparql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function userAgent() {
-  const contact = process.env.MB_CONTACT || 'unknown-contact';
-  return `liked-origins/0.1.0 ( ${contact} )`;
-}
 
 // Every triple pattern must hang off a subject that is bound inside its own
 // OPTIONAL. Resolving country off the COALESCEd ?place instead looks tidier but

@@ -1,23 +1,14 @@
 import './env.js';
+import { userAgent } from './env.js';
 // MusicBrainz client. Hard 1 request/second, single in-flight queue.
-// Contact address is mandatory per MB's rate-limiting policy.
+// The User-Agent must identify the application and offer a way to reach whoever
+// runs it; env.js has the one definition, with a project URL as the default.
 
 const BASE = 'https://musicbrainz.org/ws/2';
 const MIN_INTERVAL_MS = 1100; // 1 req/s with headroom for clock skew
 
 let lastRequestAt = 0;
 let chain = Promise.resolve();
-
-function userAgent() {
-  const contact = process.env.MB_CONTACT;
-  if (!contact) {
-    throw new Error(
-      'MB_CONTACT is not set. MusicBrainz requires a contact address in the User-Agent.\n' +
-        '  PowerShell:  $env:MB_CONTACT = "you@example.com"'
-    );
-  }
-  return `liked-origins/0.1.0 ( ${contact} )`;
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

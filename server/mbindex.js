@@ -22,11 +22,30 @@ const BATCH = 400;
 
 let backend; // resolved once, then reused
 
+/**
+ * A read-only index everyone can share, so a downloaded copy is fast out of the
+ * box.
+ *
+ * Without an index, resolving origins falls back to the live MusicBrainz API at
+ * a hard one request per second — twenty-odd minutes for a 600-artist library,
+ * on someone's first run, having installed nothing and configured nothing. That
+ * is the difference between the app working and the app appearing broken.
+ *
+ * Fill these in with a **read-only** token (`turso db tokens create <db>
+ * --read-only`). It is a token in a public file, which is a deliberate trade:
+ * what it can read is a table of facts about artists and places, identical for
+ * everyone, and it can write nothing. Revoke and reissue if it gets abused.
+ *
+ * Empty is fine — the app just falls back to the slow path, and says so.
+ */
+const PUBLIC_INDEX_URL = '';
+const PUBLIC_INDEX_TOKEN = '';
+
 async function resolveBackend() {
   if (backend !== undefined) return backend;
 
-  const url = process.env.MAPPIFY_INDEX_URL;
-  const token = process.env.MAPPIFY_INDEX_TOKEN;
+  const url = process.env.MAPPIFY_INDEX_URL || PUBLIC_INDEX_URL;
+  const token = process.env.MAPPIFY_INDEX_TOKEN || PUBLIC_INDEX_TOKEN;
   if (url && token) {
     const { createClient } = await import('@libsql/client');
     const client = createClient({ url, authToken: token });
