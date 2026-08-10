@@ -4,6 +4,7 @@ import { Home } from './routes/Home'
 import { Artist } from './routes/Artist'
 import { api } from './lib/api'
 import { SignIn } from './components/SignIn'
+import { FirstRun } from './components/FirstRun'
 
 function Header({ floating }: { floating: boolean }) {
   const { data } = useQuery({ queryKey: ['stats'], queryFn: api.stats })
@@ -27,7 +28,9 @@ export default function App() {
   const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
 
   if (setup.isLoading) return <div className="wrap" />
-  if (setup.data && !setup.data.signedIn) return <SignIn />
+  // Order matters: without a registered Spotify app there is no sign-in to offer.
+  if (setup.data?.needsClientId) return <FirstRun redirectUri={setup.data.redirectUri} />
+  if (setup.data && !setup.data.signedIn) return <SignIn local={setup.data.local} />
 
   return (
     <div className={isGlobe ? 'wrap wrap--bleed' : 'wrap'}>

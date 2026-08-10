@@ -38,16 +38,57 @@ const SCOPES = [
   'playlist-modify-public',
 ];
 
+/**
+ * The Spotify application this copy is. Environment first, then whatever was
+ * entered on the setup screen.
+ *
+ * The second source exists because "open .env in a text editor and paste this
+ * in" is where someone running Mappify on their own laptop gives up. A server
+ * deployment sets the variable and never touches the stored one.
+ */
 export function clientId() {
-  const id = process.env.SPOTIFY_CLIENT_ID?.trim();
-  if (!id) {
-    throw new Error(
-      'SPOTIFY_CLIENT_ID is not set.\n' +
-        `  Register an app at developer.spotify.com, add redirect URI exactly ${REDIRECT_URI},\n` +
-        '  then put the client ID in .env or the environment.'
-    );
+  const fromEnv = process.env.SPOTIFY_CLIENT_ID?.trim();
+  if (fromEnv) return fromEnv;
+
+  const stored = openControlDb().prepare("SELECT value FROM settings WHERE key = 'client_id'").get();
+  if (stored?.value) return stored.value;
+
+  throw new Error(
+    'No Spotify client ID yet.\n' +
+      `  Register an app at developer.spotify.com, add redirect URI exactly ${REDIRECT_URI},\n` +
+      '  then paste the client ID into the setup screen (or set SPOTIFY_CLIENT_ID).'
+  );
+}
+
+export function hasClientId() {
+  try {
+    clientId();
+    return true;
+  } catch {
+    return false;
   }
-  return id;
+}
+
+/**
+ * Records the client id entered on the setup screen.
+ *
+ * Refused once one is configured, and refused entirely when the environment
+ * supplies it: on a hosted instance this endpoint would otherwise let a stranger
+ * repoint the whole thing at their own Spotify application.
+ */
+export function setClientId(id) {
+  const clean = String(id ?? '').trim();
+  if (!/^[a-f0-9]{32}$/i.test(clean)) {
+    throw new Error('That does not look like a Spotify client ID — it is 32 letters and numbers.');
+  }
+  if (process.env.SPOTIFY_CLIENT_ID?.trim()) {
+    throw new Error('The client ID is set by the environment on this instance.');
+  }
+  const db = openControlDb();
+  const existing = db.prepare("SELECT value FROM settings WHERE key = 'client_id'").get();
+  if (existing?.value) throw new Error('A client ID is already configured.');
+  db.prepare("INSERT INTO settings (key, value) VALUES ('client_id', ?)").run(clean);
+  return clean;
 }
 
 const b64url = (buf) => buf.toString('base64url');

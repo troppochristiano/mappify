@@ -4,15 +4,15 @@ import { api } from '../lib/api'
 /**
  * What someone sees before they have connected anything.
  *
- * Every library on this server belongs to one Spotify account, so there is
- * nothing to show a visitor — no demo globe, no other person's map. The honest
- * screen is the door.
+ * Every library belongs to one Spotify account, so there is nothing to show a
+ * visitor — no demo globe, no other person's map. The honest screen is the door.
  *
- * The five-account cap gets a sentence here rather than only in an error,
- * because the failure it causes happens on Spotify's side and comes back as
- * "invalid_grant", which reads like the app is broken.
+ * The copy changes for a copy running on your own machine, because the
+ * five-account cap is a shared-instance problem: there, the person signing in is
+ * the person who registered the app, and warning them about an allowlist they
+ * control themselves makes their own laptop sound like somebody else's server.
  */
-export function SignIn() {
+export function SignIn({ local }: { local: boolean }) {
   const connect = useMutation({
     mutationFn: api.connect,
     onSuccess: ({ authUrl }) => {
@@ -31,9 +31,9 @@ export function SignIn() {
         {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
       </button>
       <p className="fine">
-        Spotify allows five accounts per app, and whoever runs this copy has to add
-        yours by hand. If sign-in fails, that is almost always why — ask them to add
-        your Spotify email.
+        {local
+          ? 'Sign in with the Spotify account you registered the app with. Your library stays on this computer.'
+          : 'Spotify allows five accounts per app, and whoever runs this copy has to add yours by hand. If sign-in fails, that is almost always why — ask them to add your Spotify email.'}
       </p>
       {connect.isError && <p className="fine">{String(connect.error)}</p>}
     </div>

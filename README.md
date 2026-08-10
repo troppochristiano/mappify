@@ -5,59 +5,70 @@ are actually from — resolved through MusicBrainz and Wikidata, not guessed fro
 names — so you can spin the world, tune into a city, hear something from it, and
 turn any place into a playlist.
 
-## What you need to know before you start
+## Run it
 
-**Spotify allows five people per app.** Since February 2026, Development Mode is
-*"limited to up to five authorized users"* and requires the app owner to hold
-Spotify Premium. Getting past that needs Extended Quota, whose criteria are a
-registered business, a launched service and 250,000 monthly active users.
+It runs on your own computer. Nothing to host, nothing to pay for, and your
+library never leaves the machine.
 
-There is no way around this: every endpoint that reads a user's library needs a
-user token, and the OAuth flow that mints one enforces the allowlist. So Mappify
-is self-hosted by design. If you want it for your friends, you register your own
-Spotify app, add up to five accounts, and run your own copy. The heavy part — the
-origin index — is shared, so you do not have to rebuild it.
+```bash
+git clone https://github.com/troppochristiano/mappify.git
+cd mappify
+npm start
+```
 
-## Setup
+That installs what it needs, builds, starts, and opens
+[127.0.0.1:8787](http://127.0.0.1:8787) in your browser. Requires **Node 22+**
+(24 recommended: `node:sqlite` runs unflagged).
 
-Requires **Node 22+** (24 recommended: `node:sqlite` runs unflagged).
+The app asks for one thing on first run: a **Spotify Client ID**. It walks you
+through getting one — create an app at
+[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), paste
+in the redirect URI it shows you, copy the ID back. Two minutes, free, and the
+screen has a copy button for the URI, which has to match exactly.
 
-1. **Register a Spotify app** at
-   [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
-   - Redirect URI must be exactly `http://127.0.0.1:8787/api/auth/callback`.
-     Spotify rejects `localhost` for loopback; it has to be the IP.
-   - Tick **Web API**.
-   - Add the Spotify accounts that will use it (up to five, including yours).
+Then click **Connect Spotify** and import.
 
-2. **Configure.**
+> Why you need your own Spotify app: Spotify will not talk to an application it
+> has never heard of, and since February 2026 an unreviewed app is
+> *"limited to up to five authorized users"*. Running your own copy sidesteps
+> that entirely — you are the developer, and you need one of your own five slots.
 
-   ```bash
-   cp .env.example .env
-   ```
+The slow part of placing artists on a map is already done: origins come from a
+**shared index**, so a first import takes seconds rather than the twenty-odd
+minutes it would cost to ask MusicBrainz artist by artist.
 
-   Fill in `SPOTIFY_CLIENT_ID` and `MB_CONTACT` (any address you can be reached
-   at — MusicBrainz requires it in the User-Agent and throttles you without it).
+### Where things live
 
-3. **Install and run.**
+| | |
+|---|---|
+| `data/u_<your spotify id>.db` | your library, and your Spotify tokens |
+| `data/control.db` | which accounts have signed in, and the client ID |
 
-   ```bash
-   npm install --prefix web && npm run dev
-   ```
+Back up `data/` if you have pinned any artists by hand; everything else in there
+can be rebuilt by importing again.
 
-   The API starts on 8787, the app on 5273. Open
-   [localhost:5273](http://localhost:5273), connect Spotify, and import. If
-   either port is taken, both move and the console says where — but the API on
-   anything other than 8787 means the redirect URI no longer matches the one you
-   registered, and Spotify will refuse the sign-in.
+### Developing on it
 
-## Hosting it for other people
+```bash
+npm run dev
+```
 
-Everyone gets their own map. Each account that signs in gets its own database
-under `data/`, and its own Spotify tokens; nobody can see anyone else's library.
+Two processes with hot reload: the API on 8787, Vite on 5273. If either port is
+taken both move and the console says where — but an API on anything other than
+8787 no longer matches the redirect URI you registered, and Spotify will refuse
+the sign-in.
 
-The five-account cap is per Spotify **application**, so this is the pattern: one
-person hosts, registers their own app, and adds up to five friends' emails. Every
-group runs its own copy and gets its own five slots.
+## Optional: hosting it for other people
+
+You do not need this. Everything above works on your own machine, and sending a
+friend the three commands is usually the better answer — they get their own copy,
+their own five Spotify slots, and their data stays on their computer.
+
+Host it only if you want people who will not run a terminal to be able to open a
+link. Everyone still gets their own map: each account that signs in gets its own
+database under `data/` and its own Spotify tokens, and nobody can see anyone
+else's library. The five-account cap is per Spotify **application**, so a host
+covers five people, and any other group runs their own copy for their own five.
 
 ### The whole setup
 

@@ -343,6 +343,16 @@ export function openControlDb() {
       verifier    TEXT NOT NULL,
       created_at  INTEGER
     );
+
+    -- Instance settings that would otherwise mean editing a file. The Spotify
+    -- client id is the only one so far, and it is here because "open .env in a
+    -- text editor" is where someone running this on their own laptop gives up.
+    -- The environment still wins where it is set, so a server deployment keeps
+    -- configuring it the usual way.
+    CREATE TABLE IF NOT EXISTS settings (
+      key    TEXT PRIMARY KEY,
+      value  TEXT
+    );
   `);
   controlDb = db;
   return db;

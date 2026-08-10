@@ -102,6 +102,12 @@ export type SetupInfo = {
   /** Whether this browser has a session at all — everything else is per-user. */
   signedIn: boolean
   user: string | null
+  /** No Spotify app registered yet: the first-run screen comes before sign-in. */
+  needsClientId: boolean
+  /** What Spotify must have on file, shown so it can be copied rather than typed. */
+  redirectUri: string
+  /** Your own machine, rather than someone's shared instance. */
+  local: boolean
   spotify: { connected: boolean; stale?: boolean }
   index: { kind: string; artist_rows?: string; area_rows?: string; dump_version?: string }
   hasLibrary: boolean
@@ -224,6 +230,8 @@ export const api = {
   setup: () => get<SetupInfo>('/api/setup'),
   connect: () => get<{ authUrl: string }>('/api/auth/connect'),
   logout: () => get<{ signedIn: false }>('/api/auth/logout'),
+  setClientId: (clientId: string) =>
+    post<{ clientId: string; redirectUri: string }>('/api/config/client-id', { clientId }),
   importStatus: () => get<ImportStatus>('/api/import/status'),
   startImport: () => get<ImportStatus>('/api/import'),
   cancelImport: () => get<{ cancelling: boolean }>('/api/import/cancel'),

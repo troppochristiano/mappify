@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node tools/dev.js",
     "build": "npm install --prefix web && npm run build --prefix web",
-    "start": "node server/api.js",
+    "start": "node tools/start.js",
     "server": "node server/api.js",
     "web": "npm run dev --prefix web",
     "db:init": "node server/db.js",

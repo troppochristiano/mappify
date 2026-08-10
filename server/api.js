@@ -12,6 +12,8 @@ import {
   disconnect,
   allowlistHint,
   publicUrl,
+  hasClientId,
+  setClientId,
   REDIRECT_URI,
 } from './auth.js';
 import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
@@ -27,6 +29,9 @@ const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? publicUrl();
 // Loopback unless told otherwise. A hosted instance sets MAPPIFY_HOST=0.0.0.0,
 // which is a decision to expose the thing and should have to be made on purpose.
 const HOST = process.env.MAPPIFY_HOST ?? '127.0.0.1';
+// Only reachable from this machine, which is what makes the first-run setup
+// screen safe to expose without anyone being signed in yet.
+const LOOPBACK = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
 
 // Every query runs against whoever the request belongs to. There is no
 // module-level database any more: the old `const db = openDb()` was the single
@@ -551,10 +556,26 @@ const routes = {
   '/api/setup': async () => ({
     signedIn: Boolean(currentUserId()),
     user: currentUserId(),
+    // Before a client ID exists there is no sign-in to offer, so the first
+    // screen has to be the one that asks for it.
+    needsClientId: !hasClientId(),
+    redirectUri: REDIRECT_URI,
+    // Running on your own machine, where the person signing in is the person who
+    // registered the app. The five-account warning is meaningless there, and
+    // saying it anyway makes a private install sound like someone else's server.
+    local: LOOPBACK,
     spotify: currentUserId() ? authStatus() : { connected: false },
     index: (await indexInfo()) ?? { kind: 'none' },
     hasLibrary: currentUserId() ? one('SELECT count(*) n FROM tracks').n > 0 : false,
   }),
+
+  // First-run only, and only from the machine it is running on. Reachable from
+  // outside, this would let a stranger point somebody else's install at their
+  // own Spotify application.
+  '/api/config/client-id': (url, body) => {
+    if (!LOOPBACK) throw new Error('Set SPOTIFY_CLIENT_ID in the environment on a hosted instance.');
+    return { clientId: setClientId(body?.clientId), redirectUri: REDIRECT_URI };
+  },
 
   // Step one of the sign-in: hand the browser somewhere to go. The client
   // navigates to it rather than the server opening a browser, which only ever
@@ -699,7 +720,12 @@ function readBody(req) {
  * something before anyone is signed in; it answers `signedIn: false` and touches
  * no library.
  */
-const PUBLIC = new Set(['/api/setup', '/api/auth/connect', '/api/auth/callback']);
+const PUBLIC = new Set([
+  '/api/setup',
+  '/api/auth/connect',
+  '/api/auth/callback',
+  '/api/config/client-id',
+]);
 
 /**
  * The end of the OAuth flow, and the only route that writes a cookie.
