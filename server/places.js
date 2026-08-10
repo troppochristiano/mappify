@@ -7,13 +7,13 @@
 //
 //   node server/places.js
 
-import { openDb } from './db.js';
+import { openDbForCli } from './db.js';
 import { sparql } from './wikidata.js';
 
 const BATCH = 120;
 const MAX_ANCESTOR_LEVELS = 4;
 
-const db = openDb();
+const db = openDbForCli();
 
 const upsertPlace = db.prepare(`
   INSERT INTO places (qid, name, country, country_iso, lat, lon, parent_qid, is_city, capital_qid, resolved_at)

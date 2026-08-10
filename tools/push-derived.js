@@ -31,7 +31,7 @@
  *   node tools/push-derived.js [--dry-run]
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 
 const dry = process.argv.includes('--dry-run');
 
@@ -42,7 +42,7 @@ if (!url || !token) {
   process.exit(1);
 }
 
-const db = openDb();
+const db = openDbForCli();
 
 const places = db
   .prepare(

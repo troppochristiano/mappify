@@ -29,10 +29,10 @@
  * Run: node tools/fix-artist-places.js [--dry-run]
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 import { sparql } from '../server/wikidata.js';
 
-const db = openDb();
+const db = openDbForCli();
 const apply = !process.argv.includes('--dry-run');
 const regionName = (iso) => {
   try {

@@ -7,13 +7,13 @@
 //
 //   node server/enrich.js [--limit N]
 
-import { openDb, reindexSearch } from './db.js';
+import { openDbForCli, reindexSearch } from './db.js';
 import { lookupArtist } from './musicbrainz.js';
 
 const limitArg = process.argv.indexOf('--limit');
 const LIMIT = limitArg > -1 ? Number(process.argv[limitArg + 1]) : Infinity;
 
-const db = openDb();
+const db = openDbForCli();
 
 const todo = db
   .prepare(

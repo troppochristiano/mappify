@@ -1,21 +1,34 @@
 // Spotify Authorization Code + PKCE. No client secret.
 //
-// Ported from liked-origins, with the token now living in the `auth` table
-// rather than a JSON file. Redirect URI must be the loopback IP — Spotify
-// rejects "localhost" for loopback.
+// The flow used to spin up a throwaway HTTP server on 127.0.0.1:8888 and open a
+// browser on whatever machine the server happened to be running on. That is a
+// desktop app's flow, and it cannot work once anyone but the host connects: the
+// callback has to come back to the *server*, and the server has to be able to
+// tell which browser it belongs to. So the redirect URI is now this API's own
+// /api/auth/callback, the PKCE verifier waits in control.db keyed by state, and
+// success mints a session cookie.
+//
+// Tokens live in each user's own database and never leave the server. The web
+// client is never given one.
 //
 // Development Mode reality: 5 authorized users per client ID, and the app owner
 // needs Spotify Premium. Anyone not on the dashboard allowlist is rejected by
-// Spotify before they ever reach this code.
+// Spotify before they ever reach this code — see allowlistHint().
 
 import './env.js';
 import crypto from 'node:crypto';
-import http from 'node:http';
-import { spawn } from 'node:child_process';
-import { openDb } from './db.js';
+import { openControlDb, openUserDb } from './db.js';
+import { currentDb, currentUserId } from './context.js';
+import { rememberPending, claimPending, createSession } from './session.js';
 
-export const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
-const CALLBACK_PORT = Number(new URL(REDIRECT_URI).port || 80);
+/** Where a browser reaches this instance. Localhost is the self-hoster default. */
+export const publicUrl = () =>
+  (process.env.MAPPIFY_PUBLIC_URL ?? `http://127.0.0.1:${process.env.MAPPIFY_PORT ?? 8787}`).replace(
+    /\/$/,
+    ''
+  );
+
+export const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? `${publicUrl()}/api/auth/callback`;
 
 const SCOPES = [
   'user-library-read',      // liked songs
@@ -39,78 +52,6 @@ export function clientId() {
 
 const b64url = (buf) => buf.toString('base64url');
 
-function openBrowser(url) {
-  try {
-    if (process.platform === 'win32') {
-      spawn('cmd', ['/c', 'start', '""', url.replace(/&/g, '^&')], {
-        detached: true,
-        stdio: 'ignore',
-        windowsVerbatimArguments: true,
-      }).unref();
-    } else if (process.platform === 'darwin') {
-      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
-    } else {
-      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
-    }
-  } catch {
-    /* the URL is printed as well */
-  }
-}
-
-const PAGE = (title, body) => `<!doctype html><meta charset="utf-8"><title>${title}</title>
-<style>
-  body{background:#121212;color:#fff;font:14px system-ui,sans-serif;margin:0;
-       display:flex;align-items:center;justify-content:center;height:100vh}
-  div{background:#181818;border-radius:10px;padding:28px 36px;text-align:center}
-  h1{font-size:16px;margin:0 0 8px}p{margin:0;color:#b3b3b3}
-  b{color:#1db954}
-</style>
-<div><h1>${title}</h1><p>${body}</p></div>`;
-
-function waitForCode(expectedState) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const url = new URL(req.url, REDIRECT_URI);
-      if (url.pathname !== new URL(REDIRECT_URI).pathname) {
-        res.writeHead(404).end();
-        return;
-      }
-      const error = url.searchParams.get('error');
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-
-      const finish = (status, title, body, cb) => {
-        res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(PAGE(title, body));
-        server.close(cb);
-      };
-
-      if (error) return finish(400, 'Authorization failed', error, () => reject(new Error(error)));
-      if (state !== expectedState)
-        return finish(400, 'State mismatch', 'Response discarded.', () =>
-          reject(new Error('OAuth state mismatch'))
-        );
-      if (!code)
-        return finish(400, 'No code', 'Spotify returned no authorization code.', () =>
-          reject(new Error('no code in callback'))
-        );
-
-      finish(200, '<b>Connected</b>', 'You can close this tab and go back to Mappify.', () =>
-        resolve(code)
-      );
-    });
-
-    server.on('error', (err) =>
-      reject(
-        err.code === 'EADDRINUSE'
-          ? new Error(`Port ${CALLBACK_PORT} is already in use — free it and retry.`)
-          : err
-      )
-    );
-    server.listen(CALLBACK_PORT, '127.0.0.1');
-  });
-}
-
 async function tokenRequest(params) {
   const res = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -126,8 +67,24 @@ async function tokenRequest(params) {
   return json;
 }
 
-function saveToken(tok, id, previousRefresh) {
-  const db = openDb();
+/**
+ * Spotify's rejection for someone not on the app's allowlist is a bare
+ * "invalid_grant / User not registered in the Developer Dashboard", which a
+ * friend reads as "the app is broken" rather than "ask the host to add me".
+ *
+ * Development Mode caps an app at five authorised users and the host has to
+ * paste each email into the dashboard by hand. Since that is the single most
+ * likely way a new person fails to get in, it gets its own sentence.
+ */
+export function allowlistHint(message) {
+  return /not registered in the developer dashboard|invalid_grant/i.test(message ?? '')
+    ? 'Spotify has not been told about your account yet. Ask whoever runs this ' +
+        'copy of Mappify to add your Spotify email in their developer dashboard, ' +
+        'then try again.'
+    : null;
+}
+
+function saveToken(db, tok, id, previousRefresh) {
   db.prepare(
     `INSERT INTO auth (id, client_id, access_token, refresh_token, expires_at, scope)
      VALUES (1,?,?,?,?,?)
@@ -143,18 +100,12 @@ function saveToken(tok, id, previousRefresh) {
     Date.now() + (tok.expires_in ?? 3600) * 1000,
     tok.scope ?? SCOPES.join(' ')
   );
-  db.close();
 }
 
-function readToken() {
-  const db = openDb();
-  const row = db.prepare('SELECT * FROM auth WHERE id = 1').get();
-  db.close();
-  return row ?? null;
-}
+const readToken = (db) => db.prepare('SELECT * FROM auth WHERE id = 1').get() ?? null;
 
 export function authStatus() {
-  const row = readToken();
+  const row = readToken(currentDb());
   if (!row?.refresh_token) return { connected: false };
   return {
     connected: true,
@@ -165,19 +116,22 @@ export function authStatus() {
 }
 
 export function disconnect() {
-  const db = openDb();
-  db.prepare('DELETE FROM auth WHERE id = 1').run();
-  db.close();
+  currentDb().prepare('DELETE FROM auth WHERE id = 1').run();
 }
 
-/** Runs the browser flow. Resolves once the callback lands. */
-export async function authorize({ onUrl } = {}) {
+/**
+ * Step one: the URL to send the browser to. The verifier stays here.
+ *
+ * @returns {{url: string, state: string}}
+ */
+export function beginAuth() {
   const id = clientId();
   const verifier = b64url(crypto.randomBytes(64));
   const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
   const state = b64url(crypto.randomBytes(16));
+  rememberPending(state, verifier);
 
-  const authUrl =
+  const url =
     'https://accounts.spotify.com/authorize?' +
     new URLSearchParams({
       client_id: id,
@@ -189,11 +143,23 @@ export async function authorize({ onUrl } = {}) {
       scope: SCOPES.join(' '),
     });
 
-  const pending = waitForCode(state);
-  onUrl?.(authUrl);
-  openBrowser(authUrl);
+  return { url, state };
+}
 
-  const code = await pending;
+/**
+ * Step two: trade the code for tokens, find out who just signed in, and give
+ * them a session.
+ *
+ * The Spotify user id is the account identity, and it decides which database
+ * file this person gets. Everything after this point is scoped by it.
+ *
+ * @returns {Promise<{userId: string, sessionId: string, displayName: string|null}>}
+ */
+export async function completeAuth(code, state) {
+  const verifier = claimPending(state);
+  if (!verifier) throw new Error('This sign-in link has expired or was already used. Try again.');
+
+  const id = clientId();
   const tok = await tokenRequest({
     grant_type: 'authorization_code',
     code,
@@ -201,19 +167,48 @@ export async function authorize({ onUrl } = {}) {
     client_id: id,
     code_verifier: verifier,
   });
-  saveToken(tok, id, null);
-  return true;
+
+  const res = await fetch('https://api.spotify.com/v1/me', {
+    headers: { Authorization: `Bearer ${tok.access_token}` },
+  });
+  if (!res.ok) throw new Error(`Could not read your Spotify profile (${res.status})`);
+  const me = await res.json();
+  if (!me.id) throw new Error('Spotify returned a profile with no id');
+
+  // The database is created by opening it, and the token goes straight into it —
+  // so a user's credentials only ever exist inside their own file.
+  const db = openUserDb(me.id);
+  saveToken(db, tok, id, null);
+
+  const control = openControlDb();
+  control
+    .prepare(
+      `INSERT INTO users (spotify_id, display_name, created_at, last_seen_at)
+       VALUES (?,?,?,?)
+       ON CONFLICT(spotify_id) DO UPDATE SET
+         display_name = excluded.display_name, last_seen_at = excluded.last_seen_at`
+    )
+    .run(me.id, me.display_name ?? null, new Date().toISOString(), new Date().toISOString());
+
+  return { userId: me.id, sessionId: createSession(me.id), displayName: me.display_name ?? null };
 }
 
 /**
- * A valid access token, refreshing if needed. Throws rather than opening a
- * browser — the API server must never block on a human.
+ * A valid access token for whoever the current request belongs to, refreshing if
+ * needed.
+ *
+ * Reads the user from the async-scoped context rather than taking one, because
+ * every caller is several frames below a route handler and a forgotten argument
+ * here means reaching for someone else's account. No context, no token.
  */
 export async function getAccessToken() {
   const id = clientId();
-  const row = readToken();
+  const db = currentDb();
+  const row = readToken(db);
   if (!row || row.client_id !== id || !row.refresh_token) {
-    throw new Error('Not connected to Spotify. Run the connect flow first.');
+    throw new Error(
+      `Not connected to Spotify${currentUserId() ? ` for ${currentUserId()}` : ''}. Connect first.`
+    );
   }
   if (row.access_token && Date.now() < row.expires_at - 60_000) return row.access_token;
 
@@ -222,6 +217,6 @@ export async function getAccessToken() {
     refresh_token: row.refresh_token,
     client_id: id,
   });
-  saveToken(tok, id, row.refresh_token);
+  saveToken(db, tok, id, row.refresh_token);
   return tok.access_token;
 }

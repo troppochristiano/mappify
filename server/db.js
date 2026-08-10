@@ -9,6 +9,15 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 export const DB_PATH = process.env.MAPPIFY_DB ?? path.join(ROOT, 'mappify.db');
 
+// One database file per user, rather than a user_id column on shared tables.
+//
+// With shared tables, a single forgotten `WHERE user_id = ?` leaks somebody
+// else's listening history, and the query that forgets it looks exactly like the
+// forty that do not. openUserDb(id) cannot leak by omission: there is nothing in
+// the file to leak. The MusicBrainz index stays global and shared — it holds
+// facts about artists, not about people.
+export const DATA_DIR = process.env.MAPPIFY_DATA ?? path.join(ROOT, 'data');
+
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -230,6 +239,112 @@ export function openDb(file = DB_PATH) {
   }
 
   if (ftsHasGenres) reindexSearch(db);
+  return db;
+}
+
+/**
+ * A Spotify user id, reduced to something that cannot escape DATA_DIR.
+ *
+ * Spotify ids are alphanumeric in practice, but this value arrives from an HTTP
+ * response and ends up in a filename, which is the classic way a "../" reaches
+ * the filesystem. Anything outside the safe set is rejected rather than
+ * rewritten, so two different ids can never collapse onto one file.
+ */
+function safeUserId(userId) {
+  if (typeof userId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(userId)) {
+    throw new Error(`Refusing to use ${JSON.stringify(userId)} as a database name`);
+  }
+  return userId;
+}
+
+export const userDbPath = (userId) => path.join(DATA_DIR, `u_${safeUserId(userId)}.db`);
+
+// Opening a database is cheap but not free, and a handle per request would also
+// mean a fresh schema check per request. Keyed by path, so the same user reuses
+// one handle and two users never share one.
+const handles = new Map();
+
+export function openUserDb(userId) {
+  const file = userDbPath(userId);
+  if (!handles.has(file)) handles.set(file, openDb(file));
+  return handles.get(file);
+}
+
+export function listUsers() {
+  if (!fs.existsSync(DATA_DIR)) return [];
+  return fs
+    .readdirSync(DATA_DIR)
+    .filter((f) => f.startsWith('u_') && f.endsWith('.db'))
+    .map((f) => f.slice(2, -3));
+}
+
+/**
+ * The database a command-line tool should work on.
+ *
+ * Tools predate multi-tenancy and take no user. Rather than guess, this resolves
+ * in order and says what it did: an explicit MAPPIFY_DB, then `--user <id>`,
+ * then the single user database if there is exactly one, then the legacy
+ * single-tenant file. With several users and no flag it refuses and lists them,
+ * because picking one for you is how a correction lands in the wrong library.
+ */
+export function openDbForCli(argv = process.argv.slice(2)) {
+  if (process.env.MAPPIFY_DB) return openDb(process.env.MAPPIFY_DB);
+
+  const i = argv.indexOf('--user');
+  if (i >= 0 && argv[i + 1]) return openUserDb(argv[i + 1]);
+
+  const users = listUsers();
+  if (users.length === 1) return openUserDb(users[0]);
+  if (users.length > 1) {
+    throw new Error(
+      `${users.length} users on this instance — say which:\n` +
+        users.map((u) => `  --user ${u}`).join('\n')
+    );
+  }
+  return openDb();
+}
+
+/**
+ * The instance-wide database: who has signed in, and their live sessions.
+ *
+ * Deliberately not a table inside anyone's library. A session lookup happens
+ * before we know whose library to open, so it cannot live in the file it would
+ * be used to choose.
+ */
+let controlDb;
+export function openControlDb() {
+  if (controlDb) return controlDb;
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const db = new DatabaseSync(path.join(DATA_DIR, 'control.db'));
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 8000;
+
+    CREATE TABLE IF NOT EXISTS users (
+      spotify_id    TEXT PRIMARY KEY,
+      display_name  TEXT,
+      created_at    TEXT,
+      last_seen_at  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id          TEXT PRIMARY KEY,   -- random, and the only thing the cookie holds
+      user_id     TEXT NOT NULL,
+      created_at  TEXT,
+      expires_at  INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+    -- One row per authorization in flight, holding the PKCE verifier. Short
+    -- lived by design: a row that never gets claimed is a flow someone
+    -- abandoned, and is swept on the next sign-in.
+    CREATE TABLE IF NOT EXISTS pending_auth (
+      state       TEXT PRIMARY KEY,
+      verifier    TEXT NOT NULL,
+      created_at  INTEGER
+    );
+  `);
+  controlDb = db;
   return db;
 }
 

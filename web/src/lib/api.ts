@@ -99,6 +99,9 @@ export type PlaceLink = {
 }
 
 export type SetupInfo = {
+  /** Whether this browser has a session at all — everything else is per-user. */
+  signedIn: boolean
+  user: string | null
   spotify: { connected: boolean; stale?: boolean }
   index: { kind: string; artist_rows?: string; area_rows?: string; dump_version?: string }
   hasLibrary: boolean
@@ -137,8 +140,26 @@ export type Stats = {
   sources: { id: number; kind: string; name: string; track_total: number | null; last_synced_at: string | null }[]
 }
 
+/**
+ * Thrown when the server has no session for us. Its own type so a caller can
+ * tell "you are signed out" apart from "that request failed", and show the
+ * sign-in screen rather than an error.
+ */
+export class NotSignedIn extends Error {
+  constructor() {
+    super('not signed in')
+    this.name = 'NotSignedIn'
+  }
+}
+
+// `credentials: 'include'` on every call, because the session lives in a cookie
+// and in development the app and the API are on different ports — which makes
+// every request cross-origin, and a cross-origin fetch sends no cookies unless
+// asked. Without this the app is permanently signed out in dev and fine in
+// production, which is the worst way to find out.
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await fetch(path, { credentials: 'include' })
+  if (res.status === 401) throw new NotSignedIn()
   if (!res.ok) throw new Error(`${res.status} ${path}`)
   const json = await res.json()
   if (json?.error) throw new Error(json.error)
@@ -148,9 +169,11 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (res.status === 401) throw new NotSignedIn()
   const json = await res.json()
   if (json?.error) throw new Error(json.error)
   return json as T
@@ -199,7 +222,8 @@ export const api = {
   artist: (id: string) => get<{ artist: Artist; tracks: Track[] }>(`/api/artist?id=${encodeURIComponent(id)}`),
   places: (by: 'city' | 'country') => get<{ places: Place[] }>(`/api/places?by=${by}`),
   setup: () => get<SetupInfo>('/api/setup'),
-  connect: () => get<{ started: boolean; authUrl: string | null }>('/api/auth/connect'),
+  connect: () => get<{ authUrl: string }>('/api/auth/connect'),
+  logout: () => get<{ signedIn: false }>('/api/auth/logout'),
   importStatus: () => get<ImportStatus>('/api/import/status'),
   startImport: () => get<ImportStatus>('/api/import'),
   cancelImport: () => get<{ cancelling: boolean }>('/api/import/cancel'),

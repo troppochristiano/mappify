@@ -149,26 +149,67 @@ to finish.
 Anything derived locally is worth sending on with `node tools/push-derived.js`,
 which is still a maintainer step: a friend's install holds a read-only token.
 
-## 5. Multi-tenancy
+## 5. Multi-tenancy — done
 
-Today the schema is single-tenant: `auth` holds one row and the library tables
-have no account column. A friend hitting a hosted instance would see the host's
-library through the host's token.
+Each account gets `data/u_<spotify id>.db`, and the server picks the file from a
+session cookie. The MusicBrainz index stays global — it holds facts about
+artists, not about people.
 
-- **A database per user, not an owner column.** One forgotten `WHERE user_id = ?`
-  leaks somebody's listening history; `openDb(userId)` cannot leak by omission.
-  The MusicBrainz index stays global.
-- **Spotify OAuth is the login.** No passwords, no separate account system.
-- **Scope every write endpoint** to the caller: `/api/artist-origin`,
-  `/api/import`, `/api/setup`, `/api/auth/*`.
-- **The allowlist is the sharp edge.** Spotify Development Mode caps an app at 5
-  authorised users, and the host must add each friend's email by hand in the
-  dashboard. Until they do, the friend hits a raw Spotify error and reads it as
-  "broken". Catch it and say "ask the host to add you" instead.
+**A database per user, not an owner column.** One forgotten `WHERE user_id = ?`
+leaks somebody's listening history, and the query that forgets it looks exactly
+like the forty that do not. There is nothing in a user's file to leak.
 
-The 5-user cap is per Spotify *application*, so the self-host pattern works: each
-host registers their own app and gets their own five slots. Viewing a hosted map
-is uncapped — the limit only binds on connecting an account.
+**`server/context.js` is what makes that enforceable.** The old
+`const db = openDb()` at the top of `api.js` was the single object that made this
+single-tenant. It is gone: `all()` and `one()` read the database out of an
+`AsyncLocalStorage` scope opened per request. The reason it is a scope rather
+than a parameter is `getAccessToken()`, which `sources/spotify.js` calls four
+levels below any handler — a forgotten argument there does not fail, it reaches
+for whichever token is lying around. Outside a scope there is no user, and the
+call throws.
+
+**Spotify OAuth is the login**, and the flow moved off the desktop. It used to
+open a browser on whatever machine the server was running on and catch the
+callback on `127.0.0.1:8888`; now the redirect URI is this API's own
+`/api/auth/callback`, the PKCE verifier waits in `control.db` keyed by state, and
+success mints a session cookie. Sessions are stored hashed, so a stolen
+`control.db` yields expiry dates rather than working logins.
+
+**Private by default.** `PUBLIC` is a three-route allowlist, so a new route is
+protected unless someone decides otherwise. Everything else 401s, and the web app
+reads that as "show the door" rather than as an error.
+
+**Per-user import jobs.** `jobs.js` held one module-level `current`, which on a
+shared instance means one person's import blocks everyone else's and reports its
+progress to all of them.
+
+**The allowlist is the sharp edge.** Spotify's rejection for someone not on the
+five-account list is `invalid_grant`, which reads like a broken app.
+`allowlistHint()` rewrites it as "ask whoever runs this copy to add your Spotify
+email", on the callback page and on every API error.
+
+### Verified
+
+- Two sessions, two libraries: 6704 tracks for one, 0 and an empty map for the
+  other, each with their own `spotify.connected`.
+- A user with no token of their own starting an import gets *"Not connected to
+  Spotify for friend"* rather than borrowing anyone else's, and job status is
+  per-user.
+- Unauthenticated: `/api/setup` answers `signedIn: false`, every other route
+  401s, a forged cookie 401s.
+
+### Configuration this added
+
+`MAPPIFY_PUBLIC_URL` (drives the redirect URI and the cookie's Secure flag),
+`MAPPIFY_HOST` (`0.0.0.0` to expose, never the default), `MAPPIFY_DATA`.
+
+**The Spotify dashboard needs the new redirect URI** — `<public url>/api/auth/callback`.
+The old `http://127.0.0.1:8888/callback` no longer receives anything.
+
+`tools/migrate-to-users.js` moves an existing single-tenant `mappify.db` across.
+It asks Spotify whose tokens those are rather than guessing, and copies rather
+than moves, `-wal` included. CLI tools take `--user <id>`, or resolve the single
+user automatically.
 
 ## 6. Public repo
 

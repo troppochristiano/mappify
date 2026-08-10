@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Home } from './routes/Home'
 import { Artist } from './routes/Artist'
 import { api } from './lib/api'
+import { SignIn } from './components/SignIn'
 
 function Header({ floating }: { floating: boolean }) {
   const { data } = useQuery({ queryKey: ['stats'], queryFn: api.stats })
@@ -21,6 +22,12 @@ function Header({ floating }: { floating: boolean }) {
 
 export default function App() {
   const isGlobe = useLocation().pathname === '/'
+  // /api/setup is the one route that answers without a session, so it is what
+  // decides whether there is a library to draw at all. Everything else 401s.
+  const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
+
+  if (setup.isLoading) return <div className="wrap" />
+  if (setup.data && !setup.data.signedIn) return <SignIn />
 
   return (
     <div className={isGlobe ? 'wrap wrap--bleed' : 'wrap'}>

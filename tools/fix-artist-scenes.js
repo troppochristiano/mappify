@@ -18,7 +18,7 @@
  * else has to fetch it again.
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 import { resolveScenes } from '../server/scenes.js';
 
 const args = process.argv.slice(2);
@@ -33,7 +33,7 @@ const WHY = new Set(
     .filter(Boolean)
 );
 
-const db = openDb();
+const db = openDbForCli();
 const { moved, stats } = await resolveScenes(db, {
   limit,
   apply,

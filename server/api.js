@@ -3,18 +3,34 @@
 
 import './env.js';
 import http from 'node:http';
-import { openDb } from './db.js';
-import { authStatus, authorize, disconnect } from './auth.js';
+import { openUserDb } from './db.js';
+import { runAsUser, currentDb, currentUserId } from './context.js';
+import {
+  authStatus,
+  beginAuth,
+  completeAuth,
+  disconnect,
+  allowlistHint,
+  publicUrl,
+  REDIRECT_URI,
+} from './auth.js';
+import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
 import { runImport, status as importStatus, cancel as cancelImport } from './jobs.js';
 import { createPlaylist } from './sources/spotify.js';
 import { indexInfo } from './mbindex.js';
 
 const PORT = Number(process.env.MAPPIFY_PORT ?? 8787);
 const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? 'http://127.0.0.1:5273';
+// Loopback unless told otherwise. A hosted instance sets MAPPIFY_HOST=0.0.0.0,
+// which is a decision to expose the thing and should have to be made on purpose.
+const HOST = process.env.MAPPIFY_HOST ?? '127.0.0.1';
 
-const db = openDb();
-const all = (sql, ...params) => db.prepare(sql).all(...params);
-const one = (sql, ...params) => db.prepare(sql).get(...params);
+// Every query runs against whoever the request belongs to. There is no
+// module-level database any more: the old `const db = openDb()` was the single
+// object that made this server single-tenant, and reading from the async-scoped
+// context is what stops a handler quietly serving the wrong library.
+const all = (sql, ...params) => currentDb().prepare(sql).all(...params);
+const one = (sql, ...params) => currentDb().prepare(sql).get(...params);
 
 // Display values: MusicBrainz first, Wikidata as fallback. Both are kept in the
 // DB; this only decides what the UI shows by default.
@@ -530,25 +546,27 @@ const routes = {
 
   /** Connection + index state, for the onboarding panel. */
   '/api/setup': async () => ({
-    spotify: authStatus(),
+    signedIn: Boolean(currentUserId()),
+    user: currentUserId(),
+    spotify: currentUserId() ? authStatus() : { connected: false },
     index: (await indexInfo()) ?? { kind: 'none' },
-    hasLibrary: one('SELECT count(*) n FROM tracks').n > 0,
+    hasLibrary: currentUserId() ? one('SELECT count(*) n FROM tracks').n > 0 : false,
   }),
 
-  '/api/auth/connect': async () => {
-    let authUrl = null;
-    // Resolves when the browser callback lands; the URL is returned either way
-    // so a headless or remote setup can be completed by hand.
-    const done = authorize({ onUrl: (u) => (authUrl = u) });
-    await new Promise((r) => setTimeout(r, 150));
-    done.catch(() => {});
-    return { started: true, authUrl };
-  },
+  // Step one of the sign-in: hand the browser somewhere to go. The client
+  // navigates to it rather than the server opening a browser, which only ever
+  // worked when the server and the person were the same machine.
+  '/api/auth/connect': () => ({ authUrl: beginAuth().url }),
 
   '/api/auth/disconnect': () => {
     disconnect();
     return { connected: false };
   },
+
+  // Ends the browser session without touching the library or the tokens, so
+  // signing back in does not mean importing again. Handled in the server below,
+  // since it is the one other route that has to write a cookie header.
+  '/api/auth/logout': () => ({ signedIn: false }),
 
   '/api/import': () => {
     if (importStatus().running) return importStatus();
@@ -669,11 +687,75 @@ function readBody(req) {
   });
 }
 
+/**
+ * Routes reachable without a session.
+ *
+ * Deliberately a short allowlist rather than a list of protected routes: a new
+ * route is private until someone decides otherwise, so forgetting to think about
+ * it fails closed. `/api/setup` is here because the sign-in screen has to ask
+ * something before anyone is signed in; it answers `signedIn: false` and touches
+ * no library.
+ */
+const PUBLIC = new Set(['/api/setup', '/api/auth/connect', '/api/auth/callback']);
+
+/**
+ * The end of the OAuth flow, and the only route that writes a cookie.
+ *
+ * Answers in HTML rather than JSON: the browser arrives here as a top-level
+ * navigation from accounts.spotify.com, so whatever comes back is what the
+ * person reads.
+ */
+async function handleCallback(url, res) {
+  const page = (title, body) => `<!doctype html><meta charset="utf-8"><title>${title}</title>
+<style>
+  body{background:#121212;color:#fff;font:14px system-ui,sans-serif;margin:0;
+       display:flex;align-items:center;justify-content:center;height:100vh}
+  div{background:#181818;border-radius:10px;padding:28px 36px;text-align:center;max-width:420px}
+  h1{font-size:16px;margin:0 0 8px}p{margin:0;color:#b3b3b3;line-height:1.5}
+  a{color:#1db954}
+</style>
+<div><h1>${title}</h1><p>${body}</p></div>`;
+
+  const send = (status, html, cookie) => {
+    const headers = { 'Content-Type': 'text/html; charset=utf-8' };
+    if (cookie) headers['Set-Cookie'] = cookie;
+    res.writeHead(status, headers).end(html);
+  };
+
+  const denied = url.searchParams.get('error');
+  if (denied) {
+    return send(400, page('Sign-in cancelled', `Spotify said: ${denied}. You can close this tab.`));
+  }
+
+  try {
+    const { sessionId, displayName } = await completeAuth(
+      url.searchParams.get('code'),
+      url.searchParams.get('state')
+    );
+    send(
+      200,
+      page(
+        `Hello${displayName ? `, ${displayName}` : ''}`,
+        `You're connected. <a href="${WEB_ORIGIN}">Open Mappify</a>.`
+      ),
+      sessionCookie(sessionId)
+    );
+  } catch (err) {
+    const message = String(err.message ?? err);
+    // The five-user cap is the single most likely reason a new person cannot get
+    // in, and Spotify's own wording for it reads like a bug in the app.
+    send(400, page('Could not sign you in', allowlistHint(message) ?? message));
+  }
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+  const url = new URL(req.url, publicUrl());
   res.setHeader('Access-Control-Allow-Origin', WEB_ORIGIN);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  // The session cookie only travels on cross-origin requests if both sides opt
+  // in, and in development the web app is on a different port to this server.
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   if (req.method === 'OPTIONS') {
@@ -681,22 +763,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/auth/callback') return handleCallback(url, res);
+
   const handler = routes[url.pathname];
   if (!handler) {
     res.writeHead(404).end(JSON.stringify({ error: 'no such route', known: Object.keys(routes) }));
     return;
   }
+
+  const userId = userForRequest(req);
+  if (!userId && !PUBLIC.has(url.pathname)) {
+    res.writeHead(401).end(JSON.stringify({ error: 'not signed in', signedIn: false }));
+    return;
+  }
+
   try {
     const body = await readBody(req);
-    // Handlers may be sync or async; awaiting both keeps the call site identical.
-    const result = await handler(url, body);
+
+    if (url.pathname === '/api/auth/logout') {
+      endSession(req);
+      res.writeHead(200, { 'Set-Cookie': clearCookie() }).end(JSON.stringify({ signedIn: false }));
+      return;
+    }
+
+    // Everything below runs inside the caller's scope, which is what makes
+    // currentDb() answer with their library and nobody else's. A public route
+    // with no session runs outside any scope, so it cannot touch a database at
+    // all — that is enforcement, not etiquette.
+    const run = () => handler(url, body);
+    const result = userId ? await runAsUser({ userId, db: openUserDb(userId) }, run) : await run();
     res.writeHead(200).end(JSON.stringify(result));
   } catch (err) {
-    res.writeHead(500).end(JSON.stringify({ error: String(err.message ?? err) }));
+    const message = String(err.message ?? err);
+    res.writeHead(500).end(JSON.stringify({ error: message, hint: allowlistHint(message) }));
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`mappify api  http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`mappify api  ${publicUrl()}  (listening on ${HOST}:${PORT})`);
+  console.log(`spotify redirect URI: ${REDIRECT_URI}`);
   console.log(`routes: ${Object.keys(routes).join('  ')}`);
 });

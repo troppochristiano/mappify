@@ -18,10 +18,13 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
     refetchInterval: (q) => (q.state.data?.running ? 700 : false),
   })
 
+  // Sign-in is a navigation, not a background call: Spotify has to be able to
+  // show you its own consent screen, and it comes back to the server's callback
+  // rather than to a port on whichever machine happens to be running this.
   const connect = useMutation({
     mutationFn: api.connect,
-    onSuccess: () => {
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['setup'] }), 1500)
+    onSuccess: ({ authUrl }) => {
+      window.location.href = authUrl
     },
   })
   const startImport = useMutation({
@@ -61,13 +64,9 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
           <button className="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
             {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
           </button>
-          {connect.data?.authUrl && (
+          {connect.isError && (
             <p className="panel-sub" style={{ marginTop: 10 }}>
-              If no tab opened,{' '}
-              <a href={connect.data.authUrl} target="_blank" rel="noreferrer">
-                open the authorization page
-              </a>
-              .
+              {String(connect.error)}
             </p>
           )}
         </>

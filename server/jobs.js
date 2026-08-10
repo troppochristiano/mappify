@@ -5,7 +5,8 @@
 // 1 request/second. That is the difference between an import that finishes while
 // you watch and one that takes 22 minutes.
 
-import { openDb, reindexSearch } from './db.js';
+import { reindexSearch } from './db.js';
+import { currentDb, currentUserId } from './context.js';
 import { lookupArtists, indexAvailable } from './mbindex.js';
 import {
   syncPlacesFromIndex,
@@ -25,8 +26,16 @@ import {
 
 const LIKED_KEY = 'liked:me';
 
-/** Single in-flight job; the UI polls `status`. */
-let current = null;
+/**
+ * One in-flight job per user; the UI polls `status`.
+ *
+ * This was a single module-level `current`, which on a shared instance means one
+ * person's import blocks everyone else's and reports its progress to all of
+ * them. Keyed by user now, and every read goes through the async-scoped context
+ * so a job cannot be observed or cancelled by anyone but its owner.
+ */
+const jobs = new Map();
+const jobFor = () => jobs.get(currentUserId()) ?? null;
 
 /**
  * Folds any duplicate Liked Songs sources into one. Earlier imports keyed it on
@@ -54,12 +63,13 @@ export function repairLikedSources(db) {
 
 export function status() {
   return (
-    current ?? { running: false, phase: 'idle', done: 0, total: 0, message: null, finishedAt: null }
+    jobFor() ?? { running: false, phase: 'idle', done: 0, total: 0, message: null, finishedAt: null }
   );
 }
 
 const set = (patch) => {
-  if (current) Object.assign(current, patch);
+  const job = jobFor();
+  if (job) Object.assign(job, patch);
 };
 
 function upsertTracks(db, sourceId, tracks) {
@@ -170,7 +180,7 @@ export async function resolveOrigins(db, { liveFallback = true } = {}) {
       message: `${left.length} not in the index — looking those up at 1/second`,
     });
     for (const artist of left) {
-      if (current?.cancelled) break;
+      if (jobFor()?.cancelled) break;
       try {
         const byUrl = await lookupBySpotifyUrl(artist.spotify_id);
         const rel = (byUrl.json?.relations ?? []).find((r) => r.artist?.id);
@@ -205,14 +215,19 @@ export async function resolveOrigins(db, { liveFallback = true } = {}) {
 
 /** Full import: Liked Songs + every playlist, then origins. */
 export async function runImport({ liveFallback = true } = {}) {
-  if (current?.running) throw new Error('An import is already running.');
-  current = {
+  if (jobFor()?.running) throw new Error('An import is already running.');
+  const userId = currentUserId();
+  jobs.set(userId, {
     running: true, phase: 'starting', done: 0, total: 0,
     message: null, startedAt: new Date().toISOString(), finishedAt: null,
     cancelled: false, summary: null,
-  };
+  });
 
-  const db = openDb();
+  // The caller's own database, never openDb(): an import writes a whole library,
+  // and writing it into the wrong file is the worst thing this server could do.
+  // It is also not closed here — the handle is shared and cached per user, and
+  // closing it out from under a concurrent request is how a read fails mid-page.
+  const db = currentDb();
   try {
     const merged = repairLikedSources(db);
     if (merged) set({ message: `merged ${merged} duplicate Liked Songs source(s)` });
@@ -238,7 +253,7 @@ export async function runImport({ liveFallback = true } = {}) {
     const unreadable = [];
     let i = 0;
     for (const p of playlists) {
-      if (current.cancelled) break;
+      if (jobFor()?.cancelled) break;
       i++;
       set({ done: i, message: `${p.name}` });
 
@@ -275,7 +290,7 @@ export async function runImport({ liveFallback = true } = {}) {
       onProgress: (n, total) => set({ done: n, total, message: `${n} of ${total} saved albums` }),
     });
     for (const al of albums) {
-      if (current.cancelled) break;
+      if (jobFor()?.cancelled) break;
       const sourceId = upsertSource(db, {
         kind: 'album',
         spotifyId: `album:${al.id}`,
@@ -370,18 +385,17 @@ export async function runImport({ liveFallback = true } = {}) {
       message: 'import complete',
       summary: { ...totals, ...origins, skippedPlaylists: unreadable, likedSkipped: liked.skipped },
     });
-    return current.summary;
+    return jobFor().summary;
   } catch (err) {
     set({ running: false, phase: 'error', message: String(err.message ?? err), finishedAt: new Date().toISOString() });
     throw err;
-  } finally {
-    db.close();
   }
 }
 
 export function cancel() {
-  if (current?.running) {
-    current.cancelled = true;
+  const job = jobFor();
+  if (job?.running) {
+    job.cancelled = true;
     set({ message: 'stopping after the current item…' });
     return true;
   }

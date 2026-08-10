@@ -6,7 +6,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDb, reindexSearch, ROOT } from './db.js';
+import { openDbForCli, reindexSearch, ROOT } from './db.js';
 
 const cacheDir =
   process.argv[2] ?? path.resolve(ROOT, '..', 'liked-origins', '.cache');
@@ -23,7 +23,7 @@ const artistsJson = readJson(path.join(cacheDir, 'artists.json'));
 const tracksJson = readJson(path.join(cacheDir, 'tracks.json'));
 const cachedTracks = tracksJson.tracks ?? [];
 
-const db = openDb();
+const db = openDbForCli();
 
 const upsertArtist = db.prepare(`
   INSERT INTO artists (spotify_id, name, mbid, artist_type, status, source, fuzzy,

@@ -32,7 +32,7 @@
  * costs nothing.
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 import { resolveChains } from '../server/admin-chain.js';
 import { buildContainment } from '../server/containment.js';
 
@@ -41,7 +41,7 @@ const dry = args.includes('--dry-run');
 const force = args.includes('--all');
 const explicit = args.filter((a) => /^Q\d+$/.test(a));
 
-const db = openDb();
+const db = openDbForCli();
 
 const seeds = explicit.length
   ? explicit

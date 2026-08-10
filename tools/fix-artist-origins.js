@@ -24,10 +24,10 @@
  *   node tools/fix-artist-origins.js --revert     # clear every Wikipedia origin
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 import { sparql } from '../server/wikidata.js';
 
-const db = openDb();
+const db = openDbForCli();
 const args = process.argv.slice(2);
 const apply = !args.includes('--dry-run');
 const limitArg = args.indexOf('--limit');

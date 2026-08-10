@@ -6,6 +6,8 @@ node_modules/
 mappify.db
 mappify.db-shm
 mappify.db-wal
+# Every user's library and their Spotify tokens, one file each.
+data/
 .mbdump/
 .impeccable/
 out/

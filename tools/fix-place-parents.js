@@ -18,11 +18,11 @@
  * the tree has no other reason to know about. Run: node tools/fix-place-parents.js
  */
 import '../server/env.js';
-import { openDb } from '../server/db.js';
+import { openDbForCli } from '../server/db.js';
 import { sparql } from '../server/wikidata.js';
 
 const BATCH = 90;
-const db = openDb();
+const db = openDbForCli();
 const apply = !process.argv.includes('--dry-run');
 
 const orphans = db
