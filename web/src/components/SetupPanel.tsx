@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useImportStatus } from '../lib/useImportStatus'
 
 /**
  * Connect + import, in the app. Everything here used to be a terminal command.
@@ -11,12 +12,10 @@ import { api } from '../lib/api'
 export function SetupPanel({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
-  const status = useQuery({
-    queryKey: ['import-status'],
-    queryFn: api.importStatus,
-    // Only poll while something is actually running.
-    refetchInterval: (q) => (q.state.data?.running ? 700 : false),
-  })
+  // The same hook App calls, sharing one query. The poll and the map refresh
+  // live there because this panel unmounts when you close it, and an import that
+  // stopped updating the globe the moment the panel closed was a real bug.
+  const status = useImportStatus()
 
   // Sign-in is a navigation, not a background call: Spotify has to be able to
   // show you its own consent screen, and it comes back to the server's callback
@@ -37,14 +36,6 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
   const s = status.data
   const running = Boolean(s?.running)
   const pct = s && s.total ? Math.round((s.done / s.total) * 100) : 0
-
-  // A finished import changes everything the globe draws.
-  if (s?.phase === 'done' && !running) {
-    qc.invalidateQueries({ queryKey: ['map'] })
-    qc.invalidateQueries({ queryKey: ['tree'] })
-    qc.invalidateQueries({ queryKey: ['stats'] })
-    qc.invalidateQueries({ queryKey: ['sources'] })
-  }
 
   return (
     <div className="panel">
@@ -153,8 +144,8 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
         <>
           <h2 style={{ marginTop: 20 }}>Quit</h2>
           <p className="panel-sub">
-            Mappify keeps running in the background while this tab is open.
-            Closing the tab does not stop it.
+            Mappify stops on its own about a minute after you close the last tab,
+            unless an import is still running. This is the impatient version.
           </p>
           <button className="ghost" onClick={() => quit.mutate()} disabled={quit.isPending}>
             {quit.isSuccess ? 'stopped — you can close this tab' : 'Quit Mappify'}

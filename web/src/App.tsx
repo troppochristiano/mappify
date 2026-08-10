@@ -5,6 +5,8 @@ import { Artist } from './routes/Artist'
 import { api } from './lib/api'
 import { SignIn } from './components/SignIn'
 import { FirstRun } from './components/FirstRun'
+import { useHeartbeat } from './lib/usePresence'
+import { useImportStatus } from './lib/useImportStatus'
 
 function Header({ floating }: { floating: boolean }) {
   const { data } = useQuery({ queryKey: ['stats'], queryFn: api.stats })
@@ -26,6 +28,13 @@ export default function App() {
   // /api/setup is the one route that answers without a session, so it is what
   // decides whether there is a library to draw at all. Everything else 401s.
   const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
+
+  // Both above the early returns below — hooks cannot be conditional, and the
+  // heartbeat has to keep going on the sign-in and first-run screens too, since
+  // a tab waiting there is still a tab. App is the only component mounted on
+  // every route and regardless of which panel is open.
+  useHeartbeat(setup.data?.local ?? false)
+  useImportStatus()
 
   if (setup.isLoading) return <div className="wrap" />
   // Order matters: without a registered Spotify app there is no sign-in to offer.

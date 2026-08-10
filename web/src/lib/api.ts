@@ -119,6 +119,10 @@ export type ImportStatus = {
   done: number
   total: number
   message: string | null
+  /** Ticks whenever what the map draws has changed. Watch it, not `phase`. */
+  revision?: number
+  /** When the first dots became drawable — seconds in, not at the end. */
+  mapReadyAt?: string | null
   summary?: {
     tracks: number; artists: number; playlists: number
     fromIndex: number; fromLive: number; unresolved: number

@@ -18,7 +18,8 @@ import {
 } from './auth.js';
 import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
 import { serveStatic, hasBuiltApp } from './static.js';
-import { runImport, status as importStatus, cancel as cancelImport } from './jobs.js';
+import { runImport, status as importStatus, cancel as cancelImport, anyRunning } from './jobs.js';
+import { beat, bye, armAutoQuit, graceMs } from './presence.js';
 import { createPlaylist } from './sources/spotify.js';
 import { indexInfo } from './mbindex.js';
 
@@ -32,6 +33,12 @@ const HOST = process.env.MAPPIFY_HOST ?? '127.0.0.1';
 // Only reachable from this machine, which is what makes the first-run setup
 // screen safe to expose without anyone being signed in yet.
 const LOOPBACK = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
+
+// Requests being served right now. The idle shutdown counts these as work, so it
+// can never land in the middle of one — /api/playlist-create writes to somebody's
+// Spotify account, and being halfway through that when the process exits is the
+// kind of thing that is very hard to explain afterwards.
+let inFlight = 0;
 
 // Every query runs against whoever the request belongs to. There is no
 // module-level database any more: the old `const db = openDb()` was the single
@@ -617,6 +624,23 @@ const routes = {
     return { stopping: true };
   },
 
+  // An open tab saying so. Cheap on purpose: no database, no session, no user —
+  // it answers before anyone has signed in, because a tab sitting on the sign-in
+  // screen is still a reason to stay up.
+  '/api/alive': (url) => {
+    if (!LOOPBACK) return { ok: false };
+    beat(url.searchParams.get('tab'));
+    return { ok: true, graceMs };
+  },
+
+  // Sent by sendBeacon as the tab goes. Only shortens that tab's window, since
+  // this fires on a reload too — see presence.js.
+  '/api/bye': (url) => {
+    if (!LOOPBACK) return { ok: false };
+    bye(url.searchParams.get('tab'));
+    return { ok: true };
+  },
+
   '/api/import': () => {
     if (importStatus().running) return importStatus();
     runImport().catch(() => {}); // errors surface through /api/import/status
@@ -753,6 +777,9 @@ const PUBLIC = new Set([
   // Quitting has to work from the sign-in screen too, before anyone has a
   // session. Its own guard is that the request came from this machine.
   '/api/quit',
+  // Same reasoning: a tab is a tab whether or not anyone has signed in yet.
+  '/api/alive',
+  '/api/bye',
 ]);
 
 /**
@@ -838,6 +865,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  inFlight++;
   try {
     const body = await readBody(req);
 
@@ -857,8 +885,24 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     const message = String(err.message ?? err);
     res.writeHead(500).end(JSON.stringify({ error: message, hint: allowlistHint(message) }));
+  } finally {
+    inFlight--;
   }
 });
+
+// Stop when the last tab goes. Only locally — a hosted copy serves people who
+// did not start it. MAPPIFY_AUTOQUIT=0 turns it off, which is what `npm run dev`
+// does: there the API is one half of a pair, and it exiting would take Vite with
+// it every time you closed a tab.
+if (LOOPBACK && process.env.MAPPIFY_AUTOQUIT !== '0') {
+  armAutoQuit({
+    isBusy: () => anyRunning() || inFlight > 0,
+    onQuit: () => {
+      console.log('no browser tab for a while — stopping');
+      process.exit(0); // 0, or the launcher shows an error dialog
+    },
+  });
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`mappify api  ${publicUrl()}  (listening on ${HOST}:${PORT})`);

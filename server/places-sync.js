@@ -21,9 +21,15 @@ import {
 import { resolvePlacesByMbids } from './wikidata.js';
 
 /**
+ * @param {object} [opts]
+ * @param {boolean} [opts.network] false to skip the Wikidata tail below.
+ *   The index half of this is pure local reads and takes about a tenth of a
+ *   second; the tail resolves artists MusicBrainz has no area for and costs
+ *   SPARQL round trips. Callers that run this to get dots on screen quickly ask
+ *   for the fast half only, and a later call picks up the rest.
  * @returns {Promise<{areas:number, places:number, missing:number}>}
  */
-export async function syncPlacesFromIndex(db) {
+export async function syncPlacesFromIndex(db, { network = true } = {}) {
   const referenced = db
     .prepare(
       `SELECT DISTINCT id FROM (
@@ -108,7 +114,7 @@ export async function syncPlacesFromIndex(db) {
   }
   db.exec('COMMIT');
 
-  const tail = await resolveAreaLessArtists(db, upsertPlace, stamp);
+  const tail = network ? await resolveAreaLessArtists(db, upsertPlace, stamp) : 0;
   return { areas: mapped, places: places + tail, missing: referenced.length - found.size };
 }
 
@@ -177,6 +183,53 @@ async function resolveAreaLessArtists(db, upsertPlace, stamp) {
  *
  * @returns {Promise<{origins:number, places:number, chain:number}>}
  */
+/**
+ * The upsert every place-writing pass here shares.
+ *
+ * Existing values win over incoming ones throughout: a local run knows more than
+ * the index does — the chain resolver picks the *nearest* of several P131
+ * parents, where the index can only carry one hop.
+ */
+const placeUpsert = (db) =>
+  db.prepare(
+    `INSERT INTO places (qid, name, country, country_iso, lat, lon, parent_qid, is_city,
+                         capital_qid, admin_parent_qid, resolved_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(qid) DO UPDATE SET
+       country          = COALESCE(places.country, excluded.country),
+       country_iso      = COALESCE(places.country_iso, excluded.country_iso),
+       lat              = COALESCE(places.lat, excluded.lat),
+       lon              = COALESCE(places.lon, excluded.lon),
+       parent_qid       = COALESCE(places.parent_qid, excluded.parent_qid),
+       is_city          = COALESCE(places.is_city, excluded.is_city),
+       capital_qid      = COALESCE(places.capital_qid, excluded.capital_qid),
+       admin_parent_qid = COALESCE(places.admin_parent_qid, excluded.admin_parent_qid)`
+  );
+
+/** Makes sure `places` holds a row for each qid, so a pointer at one is legal. */
+async function ensurePlaceRows(db, qids) {
+  const missing = qids.filter(
+    (q) => q && !db.prepare('SELECT 1 ok FROM places WHERE qid = ?').get(q)
+  );
+  if (!missing.length) return 0;
+
+  const { places: found } = await lookupDerivedPlaces(missing);
+  if (!found.size) return 0;
+
+  const upsert = placeUpsert(db);
+  const stamp = new Date().toISOString();
+  db.exec('BEGIN');
+  for (const r of found.values()) {
+    upsert.run(
+      r.qid, r.name, r.country ?? null, r.country_iso ?? null, r.lat ?? null, r.lon ?? null,
+      r.parent_qid ?? null, r.is_city ?? null, r.capital_qid ?? null,
+      r.admin_parent_qid ?? null, stamp
+    );
+  }
+  db.exec('COMMIT');
+  return found.size;
+}
+
 export async function syncDerivedArtists(db) {
   // Artists still on a birthplace, that nobody has pinned by hand.
   const pending = db
@@ -212,11 +265,18 @@ export async function syncDerivedArtists(db) {
     'UPDATE artists SET place_qid = ? WHERE mbid = ? AND place_qid IS NULL'
   );
 
-  // Written before the place rows exist. syncDerivedPlaces() below seeds its
-  // walk from these columns, so whatever they point at is pulled across; doing
-  // it the other way round means an origin can only ever land on a place some
-  // artist already had an area for, which is exactly the ones that need it
-  // least.
+  // The rows those pointers will reference, fetched first.
+  //
+  // `artists.place_qid` is a foreign key into places(qid), so pointing at a
+  // place that has not arrived yet fails outright — the whole import ends on
+  // "FOREIGN KEY constraint failed". It went unnoticed because every test that
+  // wiped `places` beforehand also turned foreign keys off on the same
+  // connection to do the wiping.
+  //
+  // `origin_wiki_qid` has no such constraint, and syncDerivedPlaces() below
+  // still walks from both columns to pull the chain above them.
+  await ensurePlaceRows(db, [...new Set(artistPlaces.values())]);
+
   db.exec('BEGIN');
   let originCount = 0;
   let placeCount = 0;
@@ -334,8 +394,6 @@ export async function syncDerivedPlaces(db) {
  * absence as false once merged Liverpool into Walton, so it is refused outright.
  */
 export function collapseWrappers(db) {
-  db.exec('UPDATE places SET merged_into = NULL');
-
   // Only a place with children can be a wrapper, so only those need a verdict.
   // Guarding on every place made one unresolvable leaf block the whole pass.
   const unknown = db
@@ -345,7 +403,13 @@ export function collapseWrappers(db) {
          AND EXISTS (SELECT 1 FROM places c WHERE c.parent_qid = p.qid)`
     )
     .get().n;
+  // Checked *before* the reset below, not after. The other way round, a refused
+  // pass had already cleared every existing merge on its way to refusing — so
+  // running this against a half-built graph split Milan back into two dots until
+  // something completed a full pass. A refusal must be a no-op.
   if (unknown) return { collapsed: 0, skipped: unknown };
+
+  db.exec('UPDATE places SET merged_into = NULL');
 
   const wrappers = db
     .prepare(

@@ -19,9 +19,14 @@ open **Mappify**. Nothing to install — the runtime is inside.
 > *Run anyway*. **macOS**: right-click **Mappify.command** → *Open*, then *Open*.
 > Once each, not every time.
 
-No console window opens, and nothing is left behind in a terminal. Mappify keeps
-running after you close the browser tab — **Quit Mappify** in the library panel
-stops it.
+No console window opens, and nothing is left behind in a terminal. Close the last
+tab and Mappify stops on its own about a minute later — unless an import is still
+running, in which case it finishes first. **Quit Mappify** in the library panel is
+the impatient version.
+
+It never takes over Spotify playback anywhere else, either. The token it asks for
+has no playback scopes at all, and audio only plays in an embedded Spotify player
+inside the tab, so your phone and the desktop app are untouched.
 
 Your databases live in `%APPDATA%\Mappify` on Windows,
 `~/Library/Application Support/Mappify` on macOS, and `$XDG_DATA_HOME/mappify` on

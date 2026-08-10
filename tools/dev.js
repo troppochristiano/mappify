@@ -101,6 +101,9 @@ const env = {
   // In development the app is Vite's, not ours — the API only serves it in
   // production, so it has to be told where to send someone after a sign-in.
   MAPPIFY_WEB: process.env.MAPPIFY_WEB ?? `http://localhost:${webPort}`,
+  // The API exiting on its own would take this whole pair down — stopAll() kills
+  // Vite when a child dies. In development you stop it with Ctrl-C.
+  MAPPIFY_AUTOQUIT: '0',
 };
 
 start('api', process.execPath, [path.join(ROOT, 'server', 'api.js')], ROOT, env);

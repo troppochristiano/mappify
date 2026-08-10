@@ -1,5 +1,5 @@
 import { useState, useEffect, useDeferredValue, useMemo, useCallback, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { api, type Artist, type PlaceLink, type PlaceTrack } from '../lib/api'
 import {
@@ -102,10 +102,20 @@ export function Home() {
     setParams(next, { replace: true })
   }
 
-  const map = useQuery({ queryKey: ['map', sourceId], queryFn: () => api.map(sourceId) })
+  // keepPreviousData on both: an import refreshes these every ~25 seconds as it
+  // resolves more artists, and without it the globe would blink empty each time.
+  const map = useQuery({
+    queryKey: ['map', sourceId],
+    queryFn: () => api.map(sourceId),
+    placeholderData: keepPreviousData,
+  })
   // Always loaded, not just while browsing: a dot click needs the tree to work
   // out its ancestry for the breadcrumbs.
-  const tree = useQuery({ queryKey: ['tree', sourceId], queryFn: () => api.tree(sourceId) })
+  const tree = useQuery({
+    queryKey: ['tree', sourceId],
+    queryFn: () => api.tree(sourceId),
+    placeholderData: keepPreviousData,
+  })
   // Both relations arrive together; the toggle only picks which to draw.
   const links = useQuery({ queryKey: ['links'], queryFn: api.links })
   const shownLinks = useMemo(() => {
