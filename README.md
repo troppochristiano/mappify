@@ -59,40 +59,63 @@ The five-account cap is per Spotify **application**, so this is the pattern: one
 person hosts, registers their own app, and adds up to five friends' emails. Every
 group runs its own copy and gets its own five slots.
 
-### On a free Google Cloud VM
+### The whole setup
 
-An `e2-micro` in `us-west1`, `us-central1` or `us-east1` is always-free and more
-than this needs. Anything else running Debian or Ubuntu works identically.
-
-1. Create the VM (`e2-micro`, Debian 12, allow HTTP and HTTPS traffic).
-2. Point a domain at its external IP with an `A` record. It has to be a real
-   domain: Spotify only allows `http://` redirect URIs for loopback, so a bare
-   IP cannot be used and HTTPS is not optional.
-3. SSH in and run:
-
-   ```bash
-   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/troppochristiano/mappify/main/deploy/setup.sh)" -- mappify.example.com
-   ```
-
-   That installs Node 22, adds swap (1 GB of RAM is not quite enough to build the
-   web app), installs Caddy for automatic HTTPS, builds, and registers a systemd
-   service that restarts on crash and comes back after a reboot.
-
-4. Put your `SPOTIFY_CLIENT_ID` in `/opt/mappify/.env`, then
-   `sudo systemctl restart mappify`.
-5. In the Spotify dashboard, add `https://mappify.example.com/api/auth/callback`
-   as a redirect URI, and add each person under **Users and Access**.
-
-Then send people the URL. They click **Connect Spotify**, approve, and land on
-their own empty globe ready to import.
+On any Debian or Ubuntu machine — an old laptop, a Raspberry Pi, a NAS, a free
+cloud VM:
 
 ```bash
-sudo journalctl -u mappify -f     # logs
-sudo systemctl restart mappify    # after changing .env
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/troppochristiano/mappify/main/deploy/setup.sh)"
 ```
 
-**Back up `data/`.** It holds every user's library and their refresh tokens. It
-is the only thing on that machine that cannot be rebuilt.
+It installs Node, builds the app, sets up a service that restarts on crash and
+after a reboot, and puts it on the internet over HTTPS at a permanent address
+like `https://mappify.your-tailnet.ts.net`.
+
+**No domain, no DNS, no certificate, no port forwarding.** That normally accounts
+for most of the work, and it exists only because Spotify refuses any redirect URI
+that is not `https`. [Tailscale Funnel](https://tailscale.com/kb/1223/funnel)
+provides the address and the certificate for free, so all of it disappears. The
+script pauses once for you to approve the machine in a browser — that step is the
+authentication, and cannot be automated.
+
+Then, once:
+
+1. Put your `SPOTIFY_CLIENT_ID` in `/opt/mappify/.env` and
+   `sudo systemctl restart mappify`.
+2. In the [Spotify dashboard](https://developer.spotify.com/dashboard), add
+   `<your address>/api/auth/callback` as a redirect URI, and add each person's
+   Spotify email under **Users and Access**.
+
+Send people the URL. They click **Connect Spotify**, approve, and land on their
+own empty globe, ready to import.
+
+```bash
+sudo journalctl -u mappify -f       # logs
+sudo bash /opt/mappify/deploy/setup.sh   # update to the latest version
+```
+
+**Back up `/opt/mappify/data`.** It holds every user's library and their refresh
+tokens, and it is the only thing on that machine that cannot be rebuilt.
+
+#### If you already own a domain
+
+Pass it, and the script installs Caddy and gets a Let's Encrypt certificate
+instead of using Tailscale. It needs an `A` record already pointing at the
+machine.
+
+```bash
+sudo bash deploy/setup.sh mappify.example.com
+```
+
+#### Always-on, for free
+
+A home machine only serves while it is awake. For something that is always up at
+no cost, Google Cloud's `e2-micro` is free forever in `us-west1`, `us-central1`
+and `us-east1` — create it with **Debian 12** and a **standard persistent disk**
+(the default *balanced* disk is billed), SSH in, and run the same one-liner. A
+card on file is required even though nothing is charged; set a $1 budget alert
+and check the cost table after a day.
 
 ### Running it anywhere else
 
