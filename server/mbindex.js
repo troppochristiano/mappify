@@ -75,6 +75,89 @@ async function areaColumns(b) {
   return areaCols;
 }
 
+/**
+ * Same idea one level up: the derived tables only exist on an index that has had
+ * tools/push-derived.js run against it, and querying a missing table is an error
+ * rather than an empty result.
+ */
+let tableNames;
+async function hasTable(b, name) {
+  if (!tableNames) {
+    const rows = await b.query("SELECT name FROM sqlite_master WHERE type = 'table'", []);
+    tableNames = new Set(rows.map((r) => r.name));
+  }
+  return tableNames.has(name);
+}
+
+/**
+ * The settlement tree and the containment skeleton, as pushed by
+ * tools/push-derived.js. Returns empty maps against an index without them, so an
+ * older or self-built index still works — it just resolves places the slow way.
+ *
+ * @returns {Promise<{places: Map<string, object>, adminAreas: Map<string, object>}>}
+ */
+export async function lookupDerivedPlaces(qids) {
+  const out = { places: new Map(), adminAreas: new Map() };
+  const b = await resolveBackend();
+  if (!b || !qids.length) return out;
+
+  for (const [table, target] of [
+    ['place', out.places],
+    ['admin_area', out.adminAreas],
+  ]) {
+    if (!(await hasTable(b, table))) continue;
+    const cols =
+      table === 'place'
+        ? 'qid, name, country, country_iso, lat, lon, parent_qid, is_city, capital_qid, admin_parent_qid'
+        : 'qid, name, admin_parent_qid, capital_qid';
+    for (let i = 0; i < qids.length; i += BATCH) {
+      const slice = qids.slice(i, i + BATCH);
+      const rows = await b.query(
+        `SELECT ${cols} FROM ${table} WHERE qid IN (${slice.map(() => '?').join(',')})`,
+        slice
+      );
+      for (const r of rows) target.set(r.qid, r);
+    }
+  }
+  return out;
+}
+
+/**
+ * Scene origins by MusicBrainz id — keyed that way rather than by Spotify id so
+ * they apply to any library that has the artist at all.
+ *
+ * @returns {Promise<Map<string, string>>} mbid -> place qid
+ */
+export async function lookupWikiOrigins(mbids) {
+  return lookupByMbid('artist_origin_wiki', mbids);
+}
+
+/**
+ * Places for the artists MusicBrainz has no area for — resolved once through
+ * Wikidata's P19/P740 and shared, rather than re-derived per install.
+ *
+ * @returns {Promise<Map<string, string>>} mbid -> place qid
+ */
+export async function lookupArtistPlaces(mbids) {
+  return lookupByMbid('artist_place', mbids);
+}
+
+async function lookupByMbid(table, mbids) {
+  const out = new Map();
+  const b = await resolveBackend();
+  if (!b || !mbids.length || !(await hasTable(b, table))) return out;
+
+  for (let i = 0; i < mbids.length; i += BATCH) {
+    const slice = mbids.slice(i, i + BATCH);
+    const rows = await b.query(
+      `SELECT mbid, place_qid FROM ${table} WHERE mbid IN (${slice.map(() => '?').join(',')})`,
+      slice
+    );
+    for (const r of rows) out.set(r.mbid, r.place_qid);
+  }
+  return out;
+}
+
 export async function indexInfo() {
   const b = await resolveBackend();
   if (!b) return null;

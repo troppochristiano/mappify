@@ -7,7 +7,12 @@
 
 import { openDb, reindexSearch } from './db.js';
 import { lookupArtists, indexAvailable } from './mbindex.js';
-import { syncPlacesFromIndex, collapseWrappers } from './places-sync.js';
+import {
+  syncPlacesFromIndex,
+  syncDerivedArtists,
+  syncDerivedPlaces,
+  collapseWrappers,
+} from './places-sync.js';
 import { lookupBySpotifyUrl, lookupArtist } from './musicbrainz.js';
 import {
   fetchLiked,
@@ -287,9 +292,29 @@ export async function runImport({ liveFallback = true } = {}) {
     // Every artist now has an area id; turn those into place rows so the tree and
     // the map can see them. Skipping this is what left real cities in Unknown.
     set({ phase: 'places', message: 'placing cities on the map' });
+    // The corrections someone already worked out: the scene origins that put
+    // 2Pac in Baltimore rather than where he was born, and places for the tail
+    // MusicBrainz has no area for. Free here, minutes of Wikipedia and Wikidata
+    // calls otherwise — and taken *before* syncPlacesFromIndex, whose own
+    // Wikidata fallback then only chases artists the index has never seen.
+    set({ message: 'reading shared corrections' });
+    const artists = await syncDerivedArtists(db);
+
     const synced = await syncPlacesFromIndex(db);
+
+    // Place rows and the containment chain for everything any route now points
+    // at, which is why this half runs after both.
+    const derived = await syncDerivedPlaces(db);
+    if (derived.dangling) {
+      console.log(`  ! ${derived.dangling} artist(s) point at a place the index could not supply`);
+    }
+
     const collapse = collapseWrappers(db);
-    set({ message: `${synced.places} places, ${collapse.collapsed} shells folded in` });
+    set({
+      message:
+        `${synced.places} places, ${collapse.collapsed} shells folded in` +
+        (artists.origins ? `, ${artists.origins} scene origins` : ''),
+    });
 
     reindexSearch(db);
 

@@ -12,7 +12,12 @@
 // Nothing here hits the network: the index already carries coordinates, the
 // Wikidata QID, the settlement parent and the is_city verdict for every area.
 
-import { lookupAreas } from './mbindex.js';
+import {
+  lookupAreas,
+  lookupDerivedPlaces,
+  lookupWikiOrigins,
+  lookupArtistPlaces,
+} from './mbindex.js';
 import { resolvePlacesByMbids } from './wikidata.js';
 
 /**
@@ -150,6 +155,170 @@ async function resolveAreaLessArtists(db, upsertPlace, stamp) {
     }
   }
   return added;
+}
+
+/**
+ * Pull the corrections someone already derived, out of the shared index.
+ *
+ * Without this a fresh install repeats work that has a known answer: the
+ * containment chain costs a Wikidata round trip per place, and the scene origins
+ * cost a Wikipedia article plus a category fetch per artist — minutes on a first
+ * import, for facts that are identical for everybody.
+ *
+ * Three rules it will not break:
+ *
+ *   - A hand-pinned place always wins. origin_override_qid is never touched, and
+ *     an artist who has one is skipped outright.
+ *   - Local knowledge is never overwritten, only filled in. The chain resolver
+ *     picks the *nearest* of several P131 parents; the index may carry a
+ *     different one, and the local answer is the better-informed of the two.
+ *   - Chain nodes go to admin_areas, never to places. Counties in `places` is
+ *     what nested Bologna behind an administrative shell.
+ *
+ * @returns {Promise<{origins:number, places:number, chain:number}>}
+ */
+export async function syncDerivedArtists(db) {
+  // Artists still on a birthplace, that nobody has pinned by hand.
+  const pending = db
+    .prepare(
+      `SELECT DISTINCT a.mbid FROM artists a
+        WHERE a.mbid IS NOT NULL AND a.mbid <> ''
+          AND a.origin_wiki_qid IS NULL AND a.origin_override_qid IS NULL
+          AND EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = a.spotify_id)`
+    )
+    .all()
+    .map((r) => r.mbid);
+
+  // The area-less tail, whose place cannot be reached through any area id.
+  const areaLess = db
+    .prepare(
+      `SELECT DISTINCT a.mbid FROM artists a
+        WHERE a.mbid IS NOT NULL AND a.mbid <> ''
+          AND a.mb_begin_area_id IS NULL AND a.place_qid IS NULL`
+    )
+    .all()
+    .map((r) => r.mbid);
+
+  const [origins, artistPlaces] = await Promise.all([
+    lookupWikiOrigins(pending),
+    lookupArtistPlaces(areaLess),
+  ]);
+
+  const setOrigin = db.prepare(
+    `UPDATE artists SET origin_wiki_qid = ?
+      WHERE mbid = ? AND origin_wiki_qid IS NULL AND origin_override_qid IS NULL`
+  );
+  const setPlace = db.prepare(
+    'UPDATE artists SET place_qid = ? WHERE mbid = ? AND place_qid IS NULL'
+  );
+
+  // Written before the place rows exist. syncDerivedPlaces() below seeds its
+  // walk from these columns, so whatever they point at is pulled across; doing
+  // it the other way round means an origin can only ever land on a place some
+  // artist already had an area for, which is exactly the ones that need it
+  // least.
+  db.exec('BEGIN');
+  let originCount = 0;
+  let placeCount = 0;
+  for (const [mbid, qid] of origins) originCount += setOrigin.run(qid, mbid).changes;
+  for (const [mbid, qid] of artistPlaces) placeCount += setPlace.run(qid, mbid).changes;
+  db.exec('COMMIT');
+
+  return { origins: originCount, artistPlaces: placeCount };
+}
+
+/**
+ * The place rows and the chain above them, for everything the database now
+ * points at. Runs after the artist columns are set and after areas are synced,
+ * so one walk covers every place any route can reach.
+ *
+ * @returns {Promise<{places:number, chain:number}>}
+ */
+export async function syncDerivedPlaces(db) {
+  const wanted = new Set(
+    db.prepare(`SELECT qid FROM places WHERE qid LIKE 'Q%'`).all().map((r) => r.qid)
+  );
+  for (const r of db
+    .prepare(
+      `SELECT origin_wiki_qid q FROM artists WHERE origin_wiki_qid IS NOT NULL
+       UNION SELECT place_qid FROM artists WHERE place_qid IS NOT NULL`
+    )
+    .all()) {
+    if (r.q) wanted.add(r.q);
+  }
+
+  const upsertPlace = db.prepare(
+    `INSERT INTO places (qid, name, country, country_iso, lat, lon, parent_qid, is_city,
+                         capital_qid, admin_parent_qid, resolved_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(qid) DO UPDATE SET
+       country          = COALESCE(places.country, excluded.country),
+       country_iso      = COALESCE(places.country_iso, excluded.country_iso),
+       lat              = COALESCE(places.lat, excluded.lat),
+       lon              = COALESCE(places.lon, excluded.lon),
+       parent_qid       = COALESCE(places.parent_qid, excluded.parent_qid),
+       is_city          = COALESCE(places.is_city, excluded.is_city),
+       capital_qid      = COALESCE(places.capital_qid, excluded.capital_qid),
+       admin_parent_qid = COALESCE(places.admin_parent_qid, excluded.admin_parent_qid)`
+  );
+  const upsertNode = db.prepare(
+    `INSERT INTO admin_areas (qid, name, admin_parent_qid, capital_qid, resolved_at)
+     VALUES (?,?,?,?,?)
+     ON CONFLICT(qid) DO UPDATE SET
+       name             = COALESCE(admin_areas.name, excluded.name),
+       admin_parent_qid = COALESCE(admin_areas.admin_parent_qid, excluded.admin_parent_qid),
+       capital_qid      = COALESCE(admin_areas.capital_qid, excluded.capital_qid)`
+  );
+  const stamp = new Date().toISOString();
+  let placeRows = 0;
+  let chainRows = 0;
+  const seen = new Set();
+  let frontier = [...wanted];
+
+  // Walk up the chain the index describes. Four rounds closes every real
+  // hierarchy; the guard is against a cycle, not against depth.
+  for (let depth = 0; depth < 8 && frontier.length; depth++) {
+    const todo = frontier.filter((q) => q && !seen.has(q));
+    todo.forEach((q) => seen.add(q));
+    if (!todo.length) break;
+
+    const { places: p, adminAreas: a } = await lookupDerivedPlaces(todo);
+    if (!p.size && !a.size) break;
+
+    const next = new Set();
+    db.exec('BEGIN');
+    for (const r of p.values()) {
+      upsertPlace.run(
+        r.qid, r.name, r.country ?? null, r.country_iso ?? null, r.lat ?? null, r.lon ?? null,
+        r.parent_qid ?? null, r.is_city ?? null, r.capital_qid ?? null,
+        r.admin_parent_qid ?? null, stamp
+      );
+      // The place's own chain row, so containment can walk from it.
+      upsertNode.run(r.qid, r.name, r.admin_parent_qid ?? null, r.capital_qid ?? null, stamp);
+      placeRows++;
+      if (r.admin_parent_qid) next.add(r.admin_parent_qid);
+      if (r.parent_qid) next.add(r.parent_qid);
+    }
+    for (const r of a.values()) {
+      upsertNode.run(r.qid, r.name, r.admin_parent_qid ?? null, r.capital_qid ?? null, stamp);
+      chainRows++;
+      if (r.admin_parent_qid) next.add(r.admin_parent_qid);
+    }
+    db.exec('COMMIT');
+    frontier = [...next];
+  }
+
+  // An artist pointed at a place the index could not supply would sit in Unknown
+  // forever, so say so rather than leaving it to be noticed on the map.
+  const dangling = db
+    .prepare(
+      `SELECT count(*) n FROM artists a
+        WHERE a.origin_wiki_qid IS NOT NULL
+          AND a.origin_wiki_qid NOT IN (SELECT qid FROM places)`
+    )
+    .get().n;
+
+  return { places: placeRows, chain: chainRows, dangling };
 }
 
 /**

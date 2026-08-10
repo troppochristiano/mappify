@@ -76,32 +76,62 @@ what never came back.
 On the map: 363 points became 343 as artists consolidated onto scenes, London
 went from 183 tracks to 261, and unmapped tracks fell from 1042 to 1035.
 
-## 3. Share the derived fixes
+## 3. Share the derived fixes — done
 
-Push place parents and the Wikipedia-derived origins into the index, so a fresh
-install gets them instantly with no API calls.
+`node tools/push-derived.js` sends four tables to the index, and the import job
+reads them back:
 
-The index carries one admin hop per `area` row. The full chain has no home there
-yet, since a county is usually not a MusicBrainz area at all — that likely means
-a `place` table in the index rather than more columns on `area`. `admin_areas`
-and its `capital_qid` are exactly the shape that would need to travel, since
-without P36 a friend's install cannot reproduce the seat rule and would move
-Snoop to Los Angeles.
+| table | rows | what it carries |
+| --- | --- | --- |
+| `place` | 563 | the settlement tree, coordinates, `capital_qid`, `admin_parent_qid` |
+| `admin_area` | 523 | the containment skeleton — counties and states |
+| `artist_origin_wiki` | 148 | scene origins, keyed by MBID so any library can use them |
+| `artist_place` | 89 | the tail MusicBrainz has no area for |
 
-Nothing has been pushed yet: `--push` and the `--coords` backfill that fills
-`area.admin_parent_qid` are both still unrun.
+Kept a separate table from `place`, exactly as locally: merging them would nest
+Bologna behind an administrative shell on every install that pulled it.
+`capital_qid` is not optional — without P36 a friend cannot reproduce the seat
+rule and would move Snoop Dogg to Los Angeles.
 
-Facts belong in the index; opinions do not. Wikipedia origins, name-matched
-places and place parents are identical for everyone.
-`artists.origin_override_qid` is a manual escape hatch, is empty, and nothing
-should be designed around it.
+**Verified end to end.** A copy of the database with `places`, `place_areas`,
+`admin_areas`, `place_qid` and `origin_wiki_qid` all wiped rebuilt itself from
+the index in **2.7 seconds**: 562 places, 1033 chain nodes, all 148 origins and
+89 artist places, nothing dangling. Its `/api/tree` and `/api/map` match the real
+database exactly — 386 nodes, 343 points, same unmapped count. The only
+difference is two labels where the MusicBrainz area name wins over the Wikidata
+one ("Westminster" for "City of Westminster").
 
-## 4. Origins during sync
+Ordering matters and is load-bearing: `syncDerivedArtists` runs *before*
+`syncPlacesFromIndex`, so the latter's Wikidata fallback only chases artists the
+index has never seen. `syncDerivedPlaces` runs after both, when every route's
+QIDs are known.
 
-Fold the Wikipedia origin pass into the import job, fetching only for artists the
-index has never seen. Needs real retry and backoff — two category batches came
-back as HTML error pages rather than JSON during development, almost certainly
-rate limiting, and the current code logs and skips.
+Facts belong in the index; opinions do not. `artists.origin_override_qid` is a
+manual escape hatch, is empty, is never pushed, and nothing should be designed
+around it.
+
+`area.admin_parent_qid` also exists but is superseded by `place`: an `area` row
+can only carry one hop, and a county is usually not a MusicBrainz area at all.
+It fills itself for any area resolved from now on; the `--coords` backfill for
+the other 16k is not worth the SPARQL run.
+
+## 4. Origins during sync — half done
+
+The reading half is done: an import now pulls scene origins out of the index for
+free, so an artist someone has already resolved costs nothing. The retry and
+backoff the old note asked for is in too — the category fetch was answering
+bursts with an HTML rate-limit page, and 12 of 50 batches died silently on the
+first full run, each taking 20 artists with it.
+
+What is left is the *fetching* half: running the category pass during import for
+artists the index has never seen, then pushing what it learns back. Today that
+is a manual `node tools/fix-artist-scenes.js` followed by
+`node tools/push-derived.js`.
+
+Worth deciding first whether it belongs in the import at all. It costs one
+Wikidata batch per 100 artists and one Wikipedia batch per 20, and the index now
+answers for everything already known — so the cost only lands on genuinely new
+artists, but it lands during an import the user is watching.
 
 ## 5. Multi-tenancy
 
