@@ -66,6 +66,30 @@ jobs:
             cp "${{ matrix.node }}/bin/node" runtime/bin/
           fi
 
+      # The 63 MB origin index, kept as a release asset rather than in git: it is
+      # rebuilt whenever the MusicBrainz dump is, and every rebuild committed
+      # would be another 35 MB blob in the history for ever.
+      #
+      # Publish one with:
+      #   node tools/build-bundle-index.js
+      #   gzip -9 -k data/index.db
+      #   gh release upload index data/index.db.gz --clobber
+      #
+      # A build without it still works — imports fall back to MusicBrainz at one
+      # request per second — so this warns rather than failing.
+      - name: Fetch the origin index
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download index --pattern index.db.gz --output index.db.gz 2>/dev/null; then
+            gzip -d index.db.gz
+            printf 'index: %s MB\n' "$(du -m index.db | cut -f1)"
+          else
+            echo "::warning::No 'index' release asset found — this build will resolve"
+            echo "::warning::origins against MusicBrainz at 1 req/s instead of instantly."
+          fi
+
       - name: Assemble
         shell: bash
         run: |
@@ -73,6 +97,7 @@ jobs:
           cp -r server tools web/dist runtime package.json README.md out/Mappify/
           mkdir -p out/Mappify/web && mv out/Mappify/dist out/Mappify/web/dist
           [ -d node_modules ] && cp -r node_modules out/Mappify/ || true
+          [ -f index.db ] && cp index.db out/Mappify/ || true
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             cp Mappify.bat out/Mappify/
           else
@@ -103,7 +128,13 @@ jobs:
           body: |
             Download the file for your computer, unzip it, and open **Mappify**.
 
-            Nothing to install — the runtime is inside.
+            Nothing to install — the runtime and the origin index are both inside,
+            so your library is placed on the map in seconds and Spotify is the only
+            thing it talks to.
+
+            The index is a snapshot of MusicBrainz. An artist added to MusicBrainz
+            after this was built is looked up live instead, which is slower but
+            still works.
 
             Your computer will warn you that this is from an unidentified
             developer, because the download is not code-signed (a certificate

@@ -164,21 +164,42 @@ areas and the `open.spotify.com/artist/...` links, so the entire
 Spotify → MBID → city chain resolves offline. Coordinates and the city hierarchy
 come from Wikidata, joined on `P982`.
 
-**Using the shared index** (recommended): put `MAPPIFY_INDEX_URL` and
-`MAPPIFY_INDEX_TOKEN` in `.env`. Nothing to download.
+**It ships inside the download** — `index.db`, 63 MB, sitting next to the app. No
+account, no token, no network: Spotify ends up being the only thing Mappify talks
+to, which is the only one that is actually about you. A wiped library rebuilds
+every place, chain and scene origin from it in **a tenth of a second**.
 
-**Without it**, Mappify falls back to the live MusicBrainz path automatically. It
-works, it is just slow, and it tells you so in the import panel.
+It holds 434,810 artists and the 16,641 areas they point at. Artist *names* are
+dropped, since the app shows Spotify's own — 435,000 copies of a string nothing
+reads cost 8 MB in a file people download.
 
-**Building your own** (only if you are hosting an index for others):
+The trade is staleness: it is a snapshot of MusicBrainz. An artist added after it
+was built falls through to the live API, slower but working, and only for that
+artist.
+
+**Without any index** — running from source before building one — Mappify uses
+the live MusicBrainz path throughout. It works, it is just slow, and the import
+panel says so.
+
+**A hosted instance** can point at a shared Turso copy instead, with
+`MAPPIFY_INDEX_URL` and `MAPPIFY_INDEX_TOKEN`, which saves shipping 63 MB to a
+server that could hold it once.
+
+### Rebuilding it (maintainer)
 
 ```bash
-node tools/build-mb-index.js --all
+node tools/build-mb-index.js --all      # ~1.6 GB of dumps, needs tar with xz
+node tools/build-bundle-index.js        # -> data/index.db, the shippable one
+gzip -9 -k data/index.db
+gh release upload index data/index.db.gz --clobber
 ```
 
-Downloads ~1.6 GB, needs `tar` with xz support, and takes a while. `--push`
-uploads to a Turso database, whose free tier (5 GB, 500M reads/month) fits it
-comfortably.
+The release build pulls that asset and puts it in every zip, which is why the
+63 MB is not in git: it is rebuilt whenever the dump is, and each rebuild
+committed would be another 35 MB in the history for ever.
+
+Worth re-running `tools/fix-artist-scenes.js` and `tools/push-derived.js` first,
+so the corrections in the bundle are current.
 
 ## What it does
 

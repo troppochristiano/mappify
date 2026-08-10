@@ -17,35 +17,35 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
-const LOCAL_DEFAULT = path.join(ROOT, '.mbdump', 'mb-index.db');
 const BATCH = 400;
 
-let backend; // resolved once, then reused
-
 /**
- * A read-only index everyone can share, so a downloaded copy is fast out of the
- * box.
+ * Where to look for an index, in order.
  *
- * Without an index, resolving origins falls back to the live MusicBrainz API at
- * a hard one request per second — twenty-odd minutes for a 600-artist library,
- * on someone's first run, having installed nothing and configured nothing. That
- * is the difference between the app working and the app appearing broken.
+ * `index.db` beside the app is the one that ships inside the download — 63 MB
+ * that turns a first import from twenty minutes of MusicBrainz at one request
+ * per second into a few seconds of local reads, with no account, no token and no
+ * network. It is why Spotify is the only remote thing this app needs.
  *
- * Fill these in with a **read-only** token (`turso db tokens create <db>
- * --read-only`). It is a token in a public file, which is a deliberate trade:
- * what it can read is a table of facts about artists and places, identical for
- * everyone, and it can write nothing. Revoke and reissue if it gets abused.
- *
- * Empty is fine — the app just falls back to the slow path, and says so.
+ * `.mbdump/mb-index.db` is the maintainer's working copy, kept last so a
+ * development machine that has both uses the same file everyone else will.
  */
-const PUBLIC_INDEX_URL = '';
-const PUBLIC_INDEX_TOKEN = '';
+const LOCAL_CANDIDATES = [
+  path.join(ROOT, 'index.db'),
+  path.join(ROOT, 'data', 'index.db'),
+  path.join(ROOT, '.mbdump', 'mb-index.db'),
+];
+
+let backend; // resolved once, then reused
 
 async function resolveBackend() {
   if (backend !== undefined) return backend;
 
-  const url = process.env.MAPPIFY_INDEX_URL || PUBLIC_INDEX_URL;
-  const token = process.env.MAPPIFY_INDEX_TOKEN || PUBLIC_INDEX_TOKEN;
+  // A hosted instance points at Turso explicitly. Everyone else reads the file
+  // in their own download — no credential to publish, revoke, or have a quota
+  // burned on, and nothing to reach over the network.
+  const url = process.env.MAPPIFY_INDEX_URL;
+  const token = process.env.MAPPIFY_INDEX_TOKEN;
   if (url && token) {
     const { createClient } = await import('@libsql/client');
     const client = createClient({ url, authToken: token });
@@ -57,8 +57,8 @@ async function resolveBackend() {
     return backend;
   }
 
-  const file = process.env.MAPPIFY_INDEX_FILE ?? LOCAL_DEFAULT;
-  if (fs.existsSync(file)) {
+  const file = process.env.MAPPIFY_INDEX_FILE ?? LOCAL_CANDIDATES.find((f) => fs.existsSync(f));
+  if (file && fs.existsSync(file)) {
     const { DatabaseSync } = await import('node:sqlite');
     const db = new DatabaseSync(file, { readOnly: true });
     backend = {
@@ -86,13 +86,15 @@ export async function indexAvailable() {
  * older index would hit the same wall permanently. Asking first costs one
  * query per process.
  */
-let areaCols;
-async function areaColumns(b) {
-  if (areaCols) return areaCols;
-  const rows = await b.query("SELECT name FROM pragma_table_info('area')", []);
-  areaCols = new Set(rows.map((r) => r.name));
-  return areaCols;
+const columnCache = new Map();
+async function columnsOf(b, table) {
+  if (!columnCache.has(table)) {
+    const rows = await b.query(`SELECT name FROM pragma_table_info('${table}')`, []);
+    columnCache.set(table, new Set(rows.map((r) => r.name)));
+  }
+  return columnCache.get(table);
 }
+const areaColumns = (b) => columnsOf(b, 'area');
 
 /**
  * Same idea one level up: the derived tables only exist on an index that has had
@@ -195,13 +197,19 @@ export async function lookupArtists(spotifyIds) {
   const b = await resolveBackend();
   if (!b || !spotifyIds.length) return out;
 
+  // The bundled index drops artist names — the app shows Spotify's own name for
+  // an artist, and 435,000 copies of a string nothing reads cost 8 MB in a file
+  // people download. The maintainer's working index still has them.
+  const cols = await columnsOf(b, 'artist_origin');
+  const name = cols.has('name') ? 'ao.name' : 'NULL name';
+
   for (let i = 0; i < spotifyIds.length; i += BATCH) {
     const slice = spotifyIds.slice(i, i + BATCH);
     const holes = slice.map(() => '?').join(',');
     // One join gets the artist plus both of its areas resolved to names and
     // coordinates, so the caller never makes a second round trip.
     const rows = await b.query(
-      `SELECT ao.spotify_id, ao.mbid, ao.name, ao.type, ao.country_iso,
+      `SELECT ao.spotify_id, ao.mbid, ${name}, ao.type, ao.country_iso,
               ao.begin_area_id, ao.area_id,
               ba.name begin_name, ba.lat begin_lat, ba.lon begin_lon,
               aa.name area_name, aa.iso area_iso
