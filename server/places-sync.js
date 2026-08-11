@@ -446,19 +446,38 @@ function haversine(a, b) {
  */
 export function nameTwins(db, km = TWIN_KM) {
   const rows = db
-    .prepare('SELECT qid, name, lat, lon, is_city FROM places WHERE lat IS NOT NULL')
+    .prepare(
+      'SELECT qid, name, lat, lon, is_city, parent_qid, admin_parent_qid FROM places WHERE lat IS NOT NULL'
+    )
     .all();
   // A city is never folded away, only folded *into*.
   const cities = rows.filter((r) => r.is_city === 1);
   const out = [];
+
   for (const p of rows) {
     if (p.is_city !== 0) continue;
-    const hits = cities.filter(
-      (c) => c.qid !== p.qid && norm(c.name) === norm(p.name) && haversine(p, c) < km
-    );
-    // Two cities of the same name that close would mean the coordinate is a
-    // placeholder rather than a location, and there would be no way to say which
-    // one the shell is.
+    const sameName = (c) => c.qid !== p.qid && norm(c.name) === norm(p.name) && haversine(p, c) < km;
+
+    // A city of the same name in the same spot: one place recorded twice.
+    let hits = cities.filter(sameName);
+
+    // Otherwise the same name in something this shell *contains*. Walsall is
+    // two rows — the metropolitan borough and the town inside it — and Wikidata
+    // types neither as a city, so there is nothing for the clause above to fold
+    // into. The containment is recorded, just in admin_parent_qid, which the
+    // collapse cannot follow on its own: that column carries the whole P131
+    // chain, so entire countries read as shells wrapping one city and it
+    // proposes merging Japan into Tokyo. Reading it only when the names already
+    // match is what makes it safe — Japan and Tokyo do not share a name, and
+    // this finds nothing new even at a 25km radius.
+    if (!hits.length) {
+      hits = rows.filter(
+        (c) => sameName(c) && (c.admin_parent_qid === p.qid || c.parent_qid === p.qid)
+      );
+    }
+
+    // Two matches would mean the coordinate is a placeholder rather than a
+    // location, and there would be no way to say which one the shell is.
     if (hits.length === 1) {
       out.push({ qid: p.qid, name: p.name, child_qid: hits[0].qid, child_name: hits[0].name });
     }
