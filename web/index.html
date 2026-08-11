@@ -8,6 +8,11 @@
          icon in the taskbar, and an "Install" option for a Start-menu entry. -->
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#121212" />
+    <!-- The whole planet in one 40kB tile. MapLibre draws the deepest tile it
+         has, so this one is a complete Earth on the first frame and stays
+         underneath as the detail streams in on top of it. Fetched in parallel
+         with the bundle rather than after it. -->
+    <link rel="preload" as="image" href="/earth/0/0/0.jpg" />
     <title>Mappify</title>
   </head>
   <body>

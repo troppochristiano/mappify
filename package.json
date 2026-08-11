@@ -18,5 +18,8 @@
   },
   "dependencies": {
     "@libsql/client": "^0.17.4"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.3"
   }
 }

@@ -166,8 +166,15 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 /* ---------- globe ---------- */
 
 .globe-route { position: relative; height: 100%; overflow: hidden; background: var(--bg-deep); }
-.globe-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
-.globe-canvas.dragging { cursor: grabbing; }
+/* The MapLibre container. Its own canvas sits inside and is sized by the map.
+   Sized rather than positioned: MapLibre puts its own `maplibregl-map` class on
+   this element, and that class sets `position: relative` — which lands later in
+   the cascade at equal specificity and quietly wins, collapsing an absolutely
+   positioned container to zero height. */
+.globe-canvas { width: 100%; height: 100%; }
+/* MapLibre draws attribution and a logo by default; credit lives in About. */
+.globe-canvas .maplibregl-control-container { display: none; }
+.globe-canvas .maplibregl-canvas:focus { outline: none; }
 
 
 .globe-tuned {

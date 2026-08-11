@@ -28,23 +28,24 @@ import { SourceFilter } from '../components/SourceFilter'
  * you are further out, and if you are already closer, hold the zoom and just
  * centre the place.
  */
-const PLACE_ZOOM = 16
+const PLACE_ZOOM = 6
 
 /**
- * How much of a click's zoom a hover is worth.
+ * How much of a click's zoom a hover holds back, in zoom levels.
  *
  * Enough to see where you are being shown, short of the commitment a click
  * makes — so skimming a list reads as a tour rather than as a series of
- * decisions you have to undo.
+ * decisions you have to undo. This was a 0.55 multiplier when the camera was
+ * described by a projection scale; zoom levels are the log of that, so the same
+ * pull-back is log2(0.55) ≈ 0.86 of a level.
  */
-const HOVER_ZOOM_SHARE = 0.55
+const HOVER_ZOOM_BACK = 0.86
 
 /**
  * A stable empty array for the links prop.
  *
- * `?? []` would be a new array on every render, and the globe invalidates its
- * cached base layer whenever the links identity changes — so a fresh literal
- * would throw away the cache on every single render.
+ * `?? []` would be a new array on every render, and a fresh identity makes the
+ * globe re-densify and re-upload every arc — so the literal is hoisted.
  */
 const EMPTY_LINKS: PlaceLink[] = []
 
@@ -244,9 +245,10 @@ export function Home() {
    *
    * A country has no dot of its own, so it is centred on the track-weighted
    * centroid of the places inside it — that aims at where the music actually is
-   * rather than the middle of the landmass. The zoom comes from how far those
-   * places are spread, so Italy fills the view without the United States
-   * running off the edges.
+   * rather than the middle of the landmass. The zoom is left to the camera,
+   * which is asked what would fit the box those places occupy: the old
+   * spread-to-scale formula had to be retuned by hand whenever the window
+   * changed shape, and this cannot fall out of step with the viewport.
    */
   const countryFrame = useCallback(
     (iso: string) => {
@@ -255,15 +257,16 @@ export function Home() {
       const w = pts.reduce((n, p) => n + p.tracks, 0) || pts.length
       const lat = pts.reduce((n, p) => n + p.lat * p.tracks, 0) / w
       const lon = pts.reduce((n, p) => n + p.lon * p.tracks, 0) / w
-      const spread = Math.max(
-        ...pts.map((p) => Math.max(Math.abs(p.lat - lat), Math.abs(p.lon - lon))),
-        1
-      )
-      // Tuned to fill the view with the country rather than politely contain it.
-      // The old ceiling of 6 framed Italy from somewhere over the Mediterranean;
-      // a country you have deliberately picked should read as a place, with its
-      // cities far enough apart to tell one from another.
-      return { lat, lon, zoom: Math.max(2.4, Math.min(16, 150 / (spread + 9))) }
+      const lats = pts.map((p) => p.lat)
+      const lons = pts.map((p) => p.lon)
+      // A country holding a single place has no box to fit, so it is given a
+      // little room around the point rather than a zero-width one.
+      const pad = pts.length > 1 ? 0 : 0.5
+      const bounds: [[number, number], [number, number]] = [
+        [Math.min(...lons) - pad, Math.min(...lats) - pad],
+        [Math.max(...lons) + pad, Math.max(...lats) + pad],
+      ]
+      return { lat, lon, bounds }
     },
     [map.data]
   )
@@ -301,9 +304,8 @@ export function Home() {
         const frame = countryFrame(menuHover.iso)
         if (frame) {
           setFlyTo({
-            lat: frame.lat,
-            lon: frame.lon,
-            zoomAtLeast: frame.zoom * HOVER_ZOOM_SHARE,
+            ...frame,
+            zoomBack: HOVER_ZOOM_BACK,
             key: `hover:${menuHover.iso}`,
           })
         }
@@ -313,7 +315,7 @@ export function Home() {
           setFlyTo({
             lat: point.lat,
             lon: point.lon,
-            zoomAtLeast: PLACE_ZOOM * HOVER_ZOOM_SHARE,
+            zoomAtLeast: PLACE_ZOOM - HOVER_ZOOM_BACK,
             key: `hover:${menuHover.qid}`,
           })
         }

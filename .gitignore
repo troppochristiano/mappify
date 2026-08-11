@@ -14,3 +14,7 @@ out/
 
 # Rust build output for the Windows launcher.
 launcher/target/
+
+# The 27MB Blue Marble source that tools/build-earth-tiles.mjs slices. The
+# tiles it produces are committed; re-downloading the source is one command.
+tools/.cache/
