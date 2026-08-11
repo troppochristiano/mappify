@@ -324,7 +324,22 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
           // names appear progressively as zooming frees up room.
           'symbol-sort-key': ['-', 0, ['get', 'tracks']],
         },
-        paint: LABEL_PAINT,
+        paint: {
+          ...LABEL_PAINT,
+          // Stand down for whatever the focus layer is about to draw, or the
+          // name appears twice — once placed by the collision grid and once
+          // forced through on top of it.
+          //
+          // Hidden rather than filtered out. A filter would drop the feature
+          // from the layer entirely, freeing the slot it was holding, and every
+          // name around it would shuffle to fill the gap — so pointing at a dot
+          // would rearrange the map. Going transparent keeps the slot reserved,
+          // which is what makes the swap invisible. It also costs nothing:
+          // paint properties read feature state without re-laying out symbols,
+          // and layout properties like text-allow-overlap cannot read it at all,
+          // which is why the forced label needs its own layer in the first place.
+          'text-opacity': ['case', focused, 0, 1],
+        },
       },
       {
         id: LAYER.focusLabels,

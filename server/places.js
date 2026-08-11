@@ -9,6 +9,7 @@
 
 import { openDbForCli } from './db.js';
 import { sparql } from './wikidata.js';
+import { nameTwins } from './places-sync.js';
 
 const BATCH = 120;
 const MAX_ANCESTOR_LEVELS = 4;
@@ -205,11 +206,22 @@ const wrappers = unknown
       )
       .all();
 
-const setMerge = db.prepare('UPDATE places SET merged_into = ? WHERE qid = ?');
-for (const w of wrappers) setMerge.run(w.child_qid, w.qid);
+// The same collapse for shells Wikidata never linked to the city — Rome, Milan,
+// Genoa and İstanbul each exist twice with no parent link between the pair. See
+// the note on nameTwins for why name and distance together, and why not through
+// admin_parent_qid.
+const twins = unknown ? [] : nameTwins(db);
 
-console.log(`\ncollapsed ${wrappers.length} administrative wrapper(s):`);
-for (const w of wrappers) console.log(`  ${w.name} -> ${w.child_name}`);
+// Containment first, so a shell that satisfies both rules is folded by the
+// stronger evidence, and the name rule only picks up what it missed.
+const merges = new Map();
+for (const w of [...wrappers, ...twins]) if (!merges.has(w.qid)) merges.set(w.qid, w);
+
+const setMerge = db.prepare('UPDATE places SET merged_into = ? WHERE qid = ?');
+for (const w of merges.values()) setMerge.run(w.child_qid, w.qid);
+
+console.log(`\ncollapsed ${merges.size} administrative wrapper(s):`);
+for (const w of merges.values()) console.log(`  ${w.name} -> ${w.child_name}`);
 
 const stats = db
   .prepare(

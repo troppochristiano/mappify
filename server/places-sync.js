@@ -393,6 +393,79 @@ export async function syncDerivedPlaces(db) {
  * A place with no is_city verdict is *unknown*, not "not a city". Treating the
  * absence as false once merged Liverpool into Walton, so it is refused outright.
  */
+/**
+ * How far apart two records of the same place may be recorded.
+ *
+ * Chosen from the data rather than by feel. Every candidate this finds is under
+ * 1.4km, and widening it from 2km to 5km adds nothing at all — no legitimate
+ * pair of places anywhere in a library shares a name within five kilometres. So
+ * 2km sits in the middle of a wide empty gap rather than on a threshold where
+ * one more metre would start folding real places together.
+ */
+const TWIN_KM = 2;
+
+/** Case, accents and punctuation all differ between records of one place. */
+const norm = (s) =>
+  s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase();
+
+const EARTH_KM = 6371;
+const RAD = Math.PI / 180;
+
+function haversine(a, b) {
+  const dLat = (b.lat - a.lat) * RAD;
+  const dLon = (b.lon - a.lon) * RAD;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_KM * Math.asin(Math.sqrt(h));
+}
+
+/**
+ * Shells that are the same place as a city, found by name rather than by
+ * containment.
+ *
+ * Wikidata often holds a city twice — Q220 Rome and Q15119 Roma, Q490 Milano and
+ * Q18288155, Q1449 and Q16183 for Genoa — and makes neither the parent of the
+ * other, so the containment test sees a wrapper wrapping nothing and leaves it
+ * standing. The result is two dots at one spot, each holding a slice of the
+ * artists, and a menu that disagrees with the map about who is from Rome.
+ *
+ * The pair of signals is what makes this safe. Name alone would merge London
+ * with London, Ontario. Distance alone would swallow Brooklyn into Manhattan and
+ * Marylebone into London, which are genuinely nested and must stay that way.
+ * Together they only fire on one place recorded twice.
+ *
+ * Deliberately *not* done through admin_parent_qid, which looks like the obvious
+ * missing link and is a trap: it carries the whole P131 chain, so entire
+ * countries qualify as shells wrapping one city. Trying it merged Japan into
+ * Tokyo, Hungary into Budapest and Maryland into Baltimore.
+ */
+export function nameTwins(db, km = TWIN_KM) {
+  const rows = db
+    .prepare('SELECT qid, name, lat, lon, is_city FROM places WHERE lat IS NOT NULL')
+    .all();
+  // A city is never folded away, only folded *into*.
+  const cities = rows.filter((r) => r.is_city === 1);
+  const out = [];
+  for (const p of rows) {
+    if (p.is_city !== 0) continue;
+    const hits = cities.filter(
+      (c) => c.qid !== p.qid && norm(c.name) === norm(p.name) && haversine(p, c) < km
+    );
+    // Two cities of the same name that close would mean the coordinate is a
+    // placeholder rather than a location, and there would be no way to say which
+    // one the shell is.
+    if (hits.length === 1) {
+      out.push({ qid: p.qid, name: p.name, child_qid: hits[0].qid, child_name: hits[0].name });
+    }
+  }
+  return out;
+}
+
 export function collapseWrappers(db) {
   // Only a place with children can be a wrapper, so only those need a verdict.
   // Guarding on every place made one unresolvable leaf block the whole pass.
@@ -420,9 +493,14 @@ export function collapseWrappers(db) {
     )
     .all();
 
+  // Containment first, so a shell matching both rules is folded by the stronger
+  // evidence and the name rule only picks up what it missed.
+  const merges = new Map();
+  for (const w of [...wrappers, ...nameTwins(db)]) if (!merges.has(w.qid)) merges.set(w.qid, w);
+
   const set = db.prepare('UPDATE places SET merged_into = ? WHERE qid = ?');
   db.exec('BEGIN');
-  for (const w of wrappers) set.run(w.child_qid, w.qid);
+  for (const w of merges.values()) set.run(w.child_qid, w.qid);
   db.exec('COMMIT');
-  return { collapsed: wrappers.length, skipped: 0 };
+  return { collapsed: merges.size, skipped: 0 };
 }
