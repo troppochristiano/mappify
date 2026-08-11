@@ -1,15 +1,38 @@
-import { useEffect, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
-  geoOrthographic,
-  geoPath,
-  geoDistance,
-  geoCentroid,
-  type GeoPermissibleObjects,
-} from 'd3-geo'
-import { feature } from 'topojson-client'
-import type { Topology } from 'topojson-specification'
-import worldTopo from 'world-atlas/countries-110m.json'
+  LngLat,
+  Map as MapLibreMap,
+  setWorkerUrl,
+  type GeoJSONSource,
+  type MapGeoJSONFeature,
+  type Point as ScreenPoint,
+  type PointLike,
+} from 'maplibre-gl'
+import 'maplibre-gl/dist/maplibre-gl.css'
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import type { MapPoint, PlaceLink } from '../lib/api'
+import { coastlines, dotsToGeoJSON, linksToGeoJSON } from './globe/geo'
+import { LAYER, SOURCE, applyDotMode, applyLinkMode, buildStyle } from './globe/layers'
+import type { DotMode, LinkMode } from './globe/ramp'
+
+/**
+ * Tell MapLibre where its worker is, rather than letting it work it out.
+ *
+ * MapLibre resolves the worker as a sibling file of its own module, which no
+ * bundler can follow: the reference is built at runtime, so Rollup never emits
+ * the file and the request falls through to index.html. The symptom is a planet
+ * that renders perfectly with nothing on it — only the GeoJSON sources are
+ * parsed in the worker, so the imagery is fine while every dot, label and link
+ * silently fails to appear, with one MIME-type warning as the only clue.
+ *
+ * `?worker&url` makes the bundler own it: the worker and the chunk it imports
+ * are built as their own graph and the URL points at the real emitted asset, in
+ * development and in production alike.
+ */
+setWorkerUrl(maplibreWorkerUrl)
+
+export { DOT_MODES, LINK_MODES, rampAt } from './globe/ramp'
+export type { DotMode, LinkMode } from './globe/ramp'
 
 type Props = {
   points: MapPoint[]
@@ -46,193 +69,96 @@ type Props = {
  * if you are already closer then stay there. Picking a single place uses the
  * floor, because zooming *out* to show you the thing you just picked is the
  * opposite of what selecting it means.
+ *
+ * Both are MapLibre zoom levels. They used to be d3 projection scale factors,
+ * which are roughly two to the power of these — so what was a 0.55 *multiplier*
+ * on the old scale is now a subtraction of about 0.86 levels, which is what
+ * `zoomBack` carries.
  */
 export type FlyTarget = {
   lat: number
   lon: number
+  /** An absolute framing: go exactly this close, in or out. */
   zoom?: number
+  /**
+   * A framing worked out from what has to fit on screen, as
+   * `[[west, south], [east, north]]`. Preferred over `zoom` when both are
+   * given, and the centre still comes from `lat`/`lon` rather than from the
+   * middle of the box — a country is aimed at where its music is.
+   */
+  bounds?: [[number, number], [number, number]]
+  /** A floor: get at least this close, but never pull back to reach it. */
   zoomAtLeast?: number
+  /**
+   * Hold back this many zoom levels from the framing, and treat the result as a
+   * floor rather than a target. What a hover uses: enough to see where you are
+   * being shown, short of the commitment a click makes.
+   */
+  zoomBack?: number
   key?: string
 }
 
-/** Slack around a dot for clicks that just miss it. */
-const NEAR_MISS = 10
-/** Total pointer travel, in pixels, past which a press is a drag and not a click. */
-const CLICK_SLOP = 6
-const MIN_SCALE = 0.8
+/** Where the tile pyramid built by `tools/build-earth-tiles.mjs` stops. */
+const EARTH_MAXZOOM = 4
+
+/**
+ * The zoom at which the planet fills the window.
+ *
+ * MapLibre's zoom describes a flat world of `512 * 2^z` pixels; wrapped onto a
+ * globe that world becomes a sphere whose diameter on screen is that width over
+ * π. So the zoom that makes the planet as wide as the shorter side of the window
+ * is a matter of solving for it, not of guessing a number — and it has to be
+ * solved again on resize, or the globe fills a laptop screen and swims in a
+ * maximised one. The old canvas globe encoded the same 0.91 margin as the 2.2 in
+ * its projection scale.
+ */
+function fillZoom(map: MapLibreMap) {
+  const el = map.getContainer()
+  const d = Math.min(el.clientWidth, el.clientHeight) * 0.91
+  return Math.log2((d * Math.PI) / 512)
+}
+
+/**
+ * How far past the fill the globe may be pulled back.
+ *
+ * A little, so the planet can be seen whole with space around it, but not so far
+ * that it becomes a marble in a black field.
+ */
+const ZOOM_OUT_ROOM = 0.35
+
 /**
  * How far in the globe will go.
  *
- * The coastlines come from a 110m atlas and turn visibly angular long before
- * this, but the dots do not: at street scale the point of zooming is to separate
+ * The imagery turns soft well before this and the coastline overlay takes over,
+ * but the dots do not: at street scale the point of zooming is to separate
  * places that overlap — the boroughs, the Bay Area, the dozen dots stacked on
  * London — and for that the map behind them is only backdrop.
  */
-const MAX_SCALE = 1500
+const MAX_ZOOM = 12
+
+/** Slack around a dot for clicks and hovers that just miss it. */
+const NEAR_MISS = 8
+
+const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] }
 
 /**
- * How much one wheel notch changes the zoom.
+ * A map, and whether it is ready to be touched yet.
  *
- * Multiplicative, so a notch means the same thing at every depth. At the old
- * 1.11 it took 65 notches to cross the range, which is a lot of scrolling to
- * separate two dots sitting on the same city — 1.18 crosses it in about 45.
+ * Every setter that names a layer or a source — `setPaintProperty`, `setFilter`,
+ * `setFeatureState` — throws "Style is not done loading" if it is called too
+ * early, and React Query routinely delivers points first. So nothing touches the
+ * map until `style.load`, and `applyAll` catches it up when that arrives.
+ *
+ * `style.load` specifically, because the two obvious alternatives are both wrong
+ * in ways worth recording. `load` waits for the first *render* as well: a hidden
+ * or throttled tab may not render for a long time, or at all, and this flag would
+ * never flip. `isStyleLoaded()` is stricter still — false until every *source*
+ * has loaded too, which for the raster source means waiting on tiles, which are
+ * only requested once something renders. Neither describes the thing actually
+ * being waited for, which is "has the style spec been parsed and do the layers
+ * exist".
  */
-const ZOOM_STEP = 1.18
-const LABEL_FONT = '600 11px system-ui, sans-serif'
-
-/**
- * Country outlines, each with a bounding cap on the sphere.
- *
- * Drawing land is by far the most expensive thing in a frame — ~7.5ms of an
- * ~8.4ms drag frame, and the cost is per-vertex across all ~8,200 of them.
- * Roughly half belong to countries wholly on the far side of the planet, so
- * each feature carries the centre and angular radius of the smallest cap
- * containing it and one distance test rejects the lot, the same way dots are
- * already culled. Exact rather than approximate: a shape beyond the horizon
- * contributes nothing to the picture.
- *
- * Measured at 4% (7.76ms → 7.43ms, alternating frame by frame), which is far
- * less than the halving the vertex count suggests — d3-geo's own clip already
- * rejects backface segments fairly cheaply, so this only saves the walk itself.
- * Kept because it is exact and costs one distance test per country, but the
- * real fix for a still globe is the cached base layer in the component, not
- * this.
- */
-const land = (() => {
-  const topo = worldTopo as unknown as Topology
-  const fc = feature(topo, topo.objects.countries) as unknown as {
-    features: GeoPermissibleObjects[]
-  }
-  return fc.features.map((f) => {
-    const centre = geoCentroid(f) as [number, number]
-    let radius = 0
-    // geoBounds is a lon/lat box and is wrong across the antimeridian and at the
-    // poles, so the radius is measured against the vertices themselves.
-    const walk = (co: unknown): void => {
-      if (Array.isArray(co) && typeof co[0] === 'number') {
-        const d = geoDistance(centre, co as [number, number])
-        if (d > radius) radius = d
-      } else if (Array.isArray(co)) co.forEach(walk)
-    }
-    walk((f as { geometry?: { coordinates?: unknown } }).geometry?.coordinates)
-    return { f, centre, radius }
-  })
-})()
-
-/**
- * How a dot carries "how much music is from here".
- *
- * `size` reads instantly but the biggest dots swallow their neighbours, which is
- * worst exactly where the data is densest. `colour` keeps every dot the same
- * target size — better for clicking and for seeing how many distinct places
- * there are — at the cost of needing a legend. `both` doubles the encoding.
- */
-export type DotMode = 'size' | 'colour'
-
-export const DOT_MODES: { id: DotMode; label: string }[] = [
-  { id: 'size', label: 'size' },
-  { id: 'colour', label: 'colour' },
-]
-
-const UNIFORM_R = 4.5
-
-/**
- * How finely d3-geo subdivides coastline segments while the globe is moving.
- *
- * geoPath adaptively resamples every segment so a great-circle arc curves on
- * screen rather than cutting a straight chord. Loosening the tolerance to 4px
- * during motion is worth about 8% of the land cost (7.52ms → 6.92ms in an A/B
- * that alternated the setting frame by frame). Small, but free: it buys back
- * sub-pixel accuracy that nobody can see on geometry sliding past, and the
- * default (√0.5) returns the instant the globe settles.
- *
- * Worth recording what this is *not*: a first pass that changed the setting
- * between separate drags showed a 47% saving, which was an artefact — each
- * successive drag had rotated the globe further onto the Pacific, so the later
- * runs simply had less land on screen. Resampling was never the bottleneck.
- */
-const DRAG_PRECISION = 4
-
-/**
- * What the strings between places mean.
- *
- * `nesting` is containment — Brooklyn hanging off New York City — which is the
- * relation the browse menu walks, made visible on the map. `collabs` is who
- * recorded with whom. They answer different questions and overlaying both is
- * unreadable, so it is one or the other, or neither.
- */
-export type LinkMode = 'nesting' | 'collabs' | 'none'
-
-export const LINK_MODES: { id: LinkMode; label: string }[] = [
-  { id: 'nesting', label: 'nesting' },
-  { id: 'collabs', label: 'collabs' },
-  { id: 'none', label: 'no links' },
-]
-
-/**
- * How a collaboration string is weighted by how many tracks it carries.
- *
- * There are ~730 of these and most are a single shared track, so drawing them
- * all at one weight is a hairball that hides the few that matter. Banding them
- * lets Chicago–Atlanta's 37 tracks read as a thread while a one-off stays a
- * whisper. Cool blue rather than the green of the dots: the strings are context,
- * and should never compete with the thing you are actually pointing at.
- */
-const LINK_TIERS = [
-  { min: 1, max: 3, stroke: 'rgba(125,180,235,.09)', width: 0.5 },
-  { min: 3, max: 10, stroke: 'rgba(135,190,240,.20)', width: 0.7 },
-  { min: 10, max: Infinity, stroke: 'rgba(150,205,255,.42)', width: 1.1 },
-]
-
-/**
- * Nesting strings get one weight, not a tiered one.
- *
- * There are only a few dozen and they carry no magnitude — a borough is inside
- * its city, and that is the whole statement. They are also short, joining dots
- * that already overlap, so they need to be brighter than a collaboration arc to
- * be visible at all at that length.
- */
-const NEST_TIERS = [{ min: -Infinity, max: Infinity, stroke: 'rgba(160,210,255,.72)', width: 1.3 }]
-
-/** The colour a string takes when it belongs to the place you have selected. */
-const LINK_ACTIVE = 'rgba(30,215,96,.75)'
-
-/**
- * Track counts are wildly skewed — one artist can hold 150 tracks while most
- * places hold one or two — so the ramp is logarithmic. A linear ramp would put
- * almost every place in the first colour.
- */
-export function rampAt(t: number) {
-  const stops = [
-    [0.0, [40, 90, 60]],    // deep green: a single track
-    [0.35, [29, 185, 84]],  // Spotify green
-    [0.7, [190, 230, 120]], // lime
-    [1.0, [255, 245, 180]], // pale gold: the densest places
-  ] as const
-  const x = Math.max(0, Math.min(1, t))
-  for (let i = 1; i < stops.length; i++) {
-    if (x <= stops[i][0]) {
-      const [t0, c0] = stops[i - 1]
-      const [t1, c1] = stops[i]
-      const k = (x - t0) / (t1 - t0)
-      return c0.map((c, j) => Math.round(c + (c1[j] - c) * k)) as unknown as number[]
-    }
-  }
-  return stops[stops.length - 1][1] as unknown as number[]
-}
-
-type Box = { x: number; y: number; w: number; h: number }
-type Placed = { p: MapPoint; x: number; y: number; r: number }
-
-const intersects = (a: Box, b: Box) =>
-  a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
-
-/** Whether a dot overlaps a label box — nearest point on the box to the centre. */
-function circleHitsBox(c: Placed, b: Box) {
-  const nx = Math.max(b.x, Math.min(c.x, b.x + b.w))
-  const ny = Math.max(b.y, Math.min(c.y, b.y + b.h))
-  return Math.hypot(c.x - nx, c.y - ny) < c.r
-}
+type Bound = { map: MapLibreMap; styled: boolean }
 
 export function Globe({
   points,
@@ -246,637 +172,367 @@ export function Globe({
   linkMode,
   highlight,
 }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rotation = useRef<[number, number]>([0, -15])
-  const scale = useRef(1)
-  const velocity = useRef<[number, number]>([0, 0])
-  const dragging = useRef(false)
-  /** How far the pointer has travelled since it went down, to tell drags from clicks. */
-  const dragDistance = useRef(0)
-  const last = useRef<[number, number] | null>(null)
+  const container = useRef<HTMLDivElement>(null)
+  const bound = useRef<Bound | null>(null)
+  /** The dot the cursor is on, held by the map rather than by React. */
   const hovered = useRef<string | null>(null)
-  const targetScale = useRef<number | null>(null)
-  const pointer = useRef<[number, number] | null>(null)
-  const renderRef = useRef<(() => void) | null>(null)
-  /** Last frame's projected dots — what hit-testing runs against. */
-  const visibleRef = useRef<Placed[]>([])
-
-  const modeRef = useRef(dotMode)
-  modeRef.current = dotMode
 
   /**
-   * The busiest place in the library, cached.
+   * Props the map's own event handlers need to read.
    *
-   * This used to be recomputed inside every per-dot call — `Math.max(...map())`
-   * over every point, for every point, twice a frame. Measured at 2.06ms per
-   * frame against 0.045ms hoisted, on a 16.7ms budget.
+   * Kept as refs rather than closed over, so the handlers can be registered
+   * once at construction instead of being torn down and re-attached every time
+   * a prop changes — which for `onHover`, firing on every pointer move, is the
+   * difference between the map owning the pointer path and React owning it.
    */
-  const maxTracks = useMemo(
-    () => points.reduce((m, p) => (p.tracks > m ? p.tracks : m), 1),
-    [points]
-  )
-  const maxRef = useRef(maxTracks)
-  maxRef.current = maxTracks
-  const logMax = Math.log(1 + maxTracks)
-
-  /**
-   * In `size` mode the radius grows with the square root of track count, so one
-   * huge entry cannot swamp the map, and only weakly with zoom — that is what
-   * lets a cluster separate into distinct dots as you zoom in.
-   *
-   * In `colour` mode every dot is the same size and magnitude moves to the fill,
-   * which keeps click targets equal and makes the *number* of distinct places
-   * legible rather than just the biggest ones.
-   */
-  const radiusOf = useCallback((p: MapPoint) => {
-    const zoomBoost = Math.min(1.9, 0.75 + scale.current * 0.25)
-    if (modeRef.current === 'colour') return UNIFORM_R * Math.min(1.6, zoomBoost)
-    return 2 + Math.sqrt(p.tracks / maxRef.current) * 16 * zoomBoost
-  }, [])
-
-  /**
-   * Position on the ramp, log-scaled. Counts run 1 to ~600 and are heavily
-   * skewed, so a linear scale would leave almost every place in the first colour.
-   */
-  const rampPos = useCallback((tracks: number) => Math.log(1 + tracks) / logMax, [logMax])
-
-  /** Text measurement is expensive and a place name never changes width. */
-  const textWidths = useRef(new Map<string, number>())
-  /** Set when something changed that the idle loop would otherwise not notice. */
-  const dirty = useRef(true)
-  /** The raw draw, used when a repaint must happen this tick rather than next. */
-  const renderNow = useRef<(() => void) | null>(null)
-  /**
-   * When the rAF loop last ran, and when a paint last happened.
-   *
-   * rAF is throttled to nothing in a hidden or backgrounded tab and in some
-   * embedded preview panes, where the loop simply never fires. Dragging still
-   * has to work there, so input can drive the paint itself — but only when the
-   * loop really is dead, and never faster than a display frame.
-   */
-  const loopAlive = useRef(0)
-  const lastPaint = useRef(0)
-  /**
-   * The sphere and coastlines, kept as pixels.
-   *
-   * Land costs ~7.5ms a frame to project and it is the same picture for any two
-   * frames at the same rotation, scale and size. Hovering a dot, selecting a
-   * place, lighting a country, switching the dot encoding — none of them move
-   * the map, yet each was redrawing every coastline from scratch. Blitting a
-   * cached bitmap instead turns that into a copy.
-   *
-   * Only used when the globe is still. While it is turning the rotation differs
-   * every frame, so the cache could never hit and the extra copy would only make
-   * the drag slower.
-   */
-  const baseLayer = useRef<{ canvas: HTMLCanvasElement; key: string } | null>(null)
-  const markDirty = useCallback(() => {
-    dirty.current = true
-    renderNow.current?.()
-  }, [])
-  const target = useRef<[number, number] | null>(null)
-  const pointsRef = useRef(points)
-  const litRef = useRef(litQids)
+  const onSelectRef = useRef(onSelect)
+  const onHoverRef = useRef(onHover)
   const selectedRef = useRef(selectedQid)
-
-  pointsRef.current = points
-  litRef.current = litQids
+  onSelectRef.current = onSelect
+  onHoverRef.current = onHover
   selectedRef.current = selectedQid
 
-  const highlightRef = useRef(highlight)
-  highlightRef.current = highlight
+  const byQid = useMemo(() => new Map(points.map((p) => [p.qid, p])), [points])
+  const byQidRef = useRef(byQid)
+  byQidRef.current = byQid
 
-  const linksRef = useRef(links)
-  linksRef.current = links
-  const modeRefLink = useRef(linkMode)
-  modeRefLink.current = linkMode
+  /** Rebuilds the forced-label source. Owned by the map, called from React. */
+  const syncFocusRef = useRef<(() => void) | null>(null)
 
-  // The strings live in the cached base layer, so the cache is stale the moment
-  // they arrive — the key describes the camera, which has not moved.
-  useEffect(() => {
-    baseLayer.current = null
-    markDirty()
-  }, [links, linkMode, markDirty])
+  /** Everything below goes through here rather than each guarding for itself. */
+  const withMap = (fn: (map: MapLibreMap) => void) => {
+    const b = bound.current
+    if (b?.styled) fn(b.map)
+  }
 
-  useEffect(() => {
-    if (!flyTo) return
-    target.current = [-flyTo.lon, -flyTo.lat]
-    // A country wants to be framed, not magnified — the caller says how close.
-    if (flyTo.zoom) targetScale.current = flyTo.zoom
-    else if (flyTo.zoomAtLeast && scale.current < flyTo.zoomAtLeast) {
-      targetScale.current = flyTo.zoomAtLeast
+  // ----- what the map is shown -----
+
+  const dotsData = useMemo(
+    () => dotsToGeoJSON(points, litQids ?? null, highlight ?? null),
+    [points, litQids, highlight]
+  )
+  const linksData = useMemo(
+    () => (linkMode === 'none' ? EMPTY_FC : linksToGeoJSON(links)),
+    [links, linkMode]
+  )
+
+  const setDots = (map: MapLibreMap) => {
+    const src = map.getSource(SOURCE.dots) as GeoJSONSource | undefined
+    src?.setData(dotsRef.current as unknown as GeoJSON.FeatureCollection)
+    // setData drops feature-state along with the features it replaces.
+    const sel = selectedRef.current
+    if (sel) map.setFeatureState({ source: SOURCE.dots, id: sel }, { selected: true })
+    if (hovered.current) {
+      map.setFeatureState({ source: SOURCE.dots, id: hovered.current }, { hover: true })
     }
-    markDirty()
-  }, [flyTo])
+  }
+
+  const setLinks = (map: MapLibreMap) => {
+    const src = map.getSource(SOURCE.links) as GeoJSONSource | undefined
+    src?.setData(linksRef.current as unknown as GeoJSON.FeatureCollection)
+    applyLinkMode(map, linkModeRef.current)
+  }
 
   /**
-   * Anything that changes the picture without touching the camera.
-   *
-   * The loop only draws when the globe is moving or something has marked itself
-   * dirty, so a change that arrives while it sits still — a new point set from
-   * the source filter, a search lighting different dots, a different encoding —
-   * had no way to reach the canvas. It would keep showing the old picture until
-   * you happened to drag or hover it back to life.
+   * The strings belonging to whatever you have picked, lifted out of the faint
+   * mass beneath. A filter rather than a separate source, because the arcs are
+   * already uploaded and this only changes which of them the second layer draws.
    */
+  const setActiveLinks = (map: MapLibreMap) => {
+    const sel = selectedRef.current
+    map.setFilter(
+      LAYER.linksActive,
+      sel ? ['any', ['==', ['get', 'a'], sel], ['==', ['get', 'b'], sel]] : ['==', ['get', 'a'], ' ']
+    )
+  }
+
+  /**
+   * Push every piece of React state at the map, from scratch.
+   *
+   * This has to exist as a whole rather than as the sum of the effects below.
+   * The map is built inside an effect, and an effect can be torn down and re-run
+   * — StrictMode does it on every mount in development, and any remount of the
+   * route does it in production — while the effects that feed it do *not* re-run,
+   * because their own dependencies have not changed. A map populated only by
+   * those effects is therefore empty for its whole life the second time round:
+   * style loads, nothing ever arrives, and the planet sits there with no dots on
+   * it. So the map asks for everything itself, once, as soon as it can.
+   */
+  const applyAll = (map: MapLibreMap) => {
+    const coast = map.getSource(SOURCE.coast) as GeoJSONSource | undefined
+    coast?.setData(coastlines as unknown as GeoJSON.FeatureCollection)
+    setDots(map)
+    setLinks(map)
+    setActiveLinks(map)
+    applyDotMode(map, dotModeRef.current)
+    syncFocusRef.current?.()
+  }
+
+  const dotsRef = useRef(dotsData)
+  const linksRef = useRef(linksData)
+  const dotModeRef = useRef(dotMode)
+  const linkModeRef = useRef(linkMode)
+  dotsRef.current = dotsData
+  linksRef.current = linksData
+  dotModeRef.current = dotMode
+  linkModeRef.current = linkMode
+
+  // ----- construction -----
+
   useEffect(() => {
-    markDirty()
-  }, [points, litQids, selectedQid, dotMode, highlight, markDirty])
+    if (!container.current) return
 
-  const projectionFor = useCallback((w: number, h: number, precision?: number) => {
-    const p = geoOrthographic()
-      .scale((Math.min(w, h) / 2.2) * scale.current)
-      .translate([w / 2, h / 2])
-      .rotate(rotation.current)
-    if (precision !== undefined) p.precision(precision)
-    return p
-  }, [])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')!
-    let frame = 0
-
-    // render() is the whole picture; the rAF loop only re-runs it. Keeping them
-    // separate means a first paint always lands, even where rAF is throttled to
-    // nothing — a hidden/background tab, or an embedded preview pane.
-    const render = () => {
-      const dpr = window.devicePixelRatio || 1
-      const w = canvas.clientWidth
-      const h = canvas.clientHeight
-      // Before layout settles the element measures 0, and writing that to the
-      // backing store leaves a permanently blank canvas if no later frame comes.
-      if (!w || !h) return
-      if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-        canvas.width = w * dpr
-        canvas.height = h * dpr
+    const map = new MapLibreMap({
+      container: container.current,
+      style: buildStyle('/glyphs/{fontstack}/{range}.pbf', '/earth/{z}/{x}/{y}.jpg', EARTH_MAXZOOM),
+      center: [0, 15],
+      // Corrected to the real fill zoom as soon as the container has been
+      // measured; this is only what the first frame is drawn at.
+      zoom: 2,
+      maxZoom: MAX_ZOOM,
+      // The globe has no meaningful north-up-ness to lose and no terrain to
+      // look across, so tilting and twisting are only ways to get lost.
+      pitch: 0,
+      bearing: 0,
+      dragRotate: false,
+      touchPitch: false,
+      attributionControl: false,
+      // One world, not a repeating strip — this is a planet.
+      renderWorldCopies: false,
+      // Radio Garden's own cap. Past 2 the extra fragments buy nothing anyone
+      // can see and cost real frames on an integrated GPU.
+      pixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      // Fade the whole planet in rather than having it appear at full strength
+      // the instant the first tile lands.
+      fadeDuration: 180,
+    })
+    const self: Bound = { map, styled: false }
+    bound.current = self
+    /**
+     * Keep the floor of the zoom range tied to the size of the window.
+     *
+     * Also re-frames the globe on the first pass and whenever a resize would
+     * otherwise leave it below the new floor — so widening the window grows the
+     * planet rather than adding black around it.
+     */
+    let framed = false
+    const reframe = () => {
+      const fill = fillZoom(map)
+      map.setMinZoom(fill - ZOOM_OUT_ROOM)
+      if (!framed) {
+        framed = true
+        map.setZoom(fill)
       }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, w, h)
+    }
+    map.on('resize', reframe)
 
-      // Ease toward a fly-to target, otherwise coast on drag inertia.
-      // Zoom eases alongside the rotation, so framing a country is one motion.
-      if (targetScale.current != null) {
-        const d = targetScale.current - scale.current
-        if (Math.abs(d) < 0.02) {
-          scale.current = targetScale.current
-          targetScale.current = null
-        } else scale.current += d * 0.15
-      }
+    // Pinch zooms; it never twists. Rotation on a globe with no compass is just
+    // a way to end up sideways with no way back.
+    map.touchZoomRotate.disableRotation()
+    // MapLibre's own default caps a flick at the same speed it decelerates,
+    // which makes a hard throw feel identical to a gentle one. Radio Garden
+    // removes the cap; a spin should be worth what you put into it.
+    map.dragPan.enable({ deceleration: 1400, maxSpeed: Infinity })
 
-      if (target.current) {
-        const [tx, ty] = target.current
-        const [rx, ry] = rotation.current
-        const dx = ((tx - rx + 540) % 360) - 180
-        const dy = ty - ry
-        if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) target.current = null
-        else rotation.current = [rx + dx * 0.12, ry + dy * 0.12]
-      } else if (!dragging.current) {
-        const [vx, vy] = velocity.current
-        if (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01) {
-          rotation.current = [rotation.current[0] + vx, rotation.current[1] + vy]
-          velocity.current = [vx * 0.94, vy * 0.94]
-        }
-      }
-      rotation.current[1] = Math.max(-80, Math.min(80, rotation.current[1]))
+    // ----- pointer -----
 
-      // Whether the globe is actually in motion — dragging, coasting on inertia,
-      // or flying to a target. Detail that cannot be seen mid-motion is dropped.
-      const moving =
-        dragging.current ||
-        target.current !== null ||
-        targetScale.current !== null ||
-        Math.abs(velocity.current[0]) > 0.01 ||
-        Math.abs(velocity.current[1]) > 0.01
-
-      const projection = projectionFor(w, h, moving ? DRAG_PRECISION : undefined)
-      const centre: [number, number] = [-rotation.current[0], -rotation.current[1]]
-
-      /** Sphere and coastlines — everything that depends only on the camera. */
-      const drawBase = (into: CanvasRenderingContext2D) => {
-        const path = geoPath(projection, into)
-        into.beginPath()
-        path({ type: 'Sphere' })
-        into.fillStyle = '#0b0b0b'
-        into.fill()
-        if (!moving) {
-          into.strokeStyle = '#242424'
-          into.lineWidth = 1
-          into.stroke()
-        }
-
-        // Anything whose cap lies wholly beyond the horizon is skipped before a
-        // single one of its vertices is touched.
-        const horizon = Math.PI / 2
-        into.beginPath()
-        for (const { f, centre: c, radius } of land) {
-          if (geoDistance(c, centre) - radius > horizon) continue
-          path(f)
-        }
-        into.fillStyle = '#1c1c1c'
-        into.fill()
-        if (!moving) {
-          into.strokeStyle = '#303030'
-          into.lineWidth = 0.5
-          into.stroke()
-        }
-
-        // Collaboration strings, drawn under the dots so they read as threads
-        // between places rather than as anything you can click.
-        //
-        // A LineString between two points is a great circle to d3-geo, so these
-        // curve over the sphere and clip themselves at the horizon for free.
-        // Batched into three weights: 727 separate strokes would be 727 state
-        // changes, three is three. Skipped entirely while the globe is moving,
-        // like the coastline outlines — this is the layer you read when still.
-        if (!moving && linksRef.current.length) {
-          for (const tier of modeRefLink.current === 'nesting' ? NEST_TIERS : LINK_TIERS) {
-            into.beginPath()
-            let any = false
-            for (const l of linksRef.current) {
-              // Nesting links carry no track count, and their single tier spans
-              // everything, so the band test passes them through untouched.
-              const weight = l.tracks ?? 1
-              if (weight < tier.min || weight >= tier.max) continue
-              path({
-                type: 'LineString',
-                coordinates: [
-                  [l.alon, l.alat],
-                  [l.blon, l.blat],
-                ],
-              } as unknown as GeoPermissibleObjects)
-              any = true
-            }
-            if (!any) continue
-            into.strokeStyle = tier.stroke
-            into.lineWidth = tier.width
-            into.stroke()
-          }
+    /**
+     * The dot under a screen position.
+     *
+     * `queryRenderedFeatures` asks what was actually drawn there, so what you
+     * can click is exactly what you can see — including the horizon, since a dot
+     * on the far side of the planet is not rendered and so cannot be hit. The
+     * box is a few pixels of slack for a click that just misses.
+     */
+    const dotAt = (p: ScreenPoint): MapGeoJSONFeature | null => {
+      const box: [PointLike, PointLike] = [
+        [p.x - NEAR_MISS, p.y - NEAR_MISS],
+        [p.x + NEAR_MISS, p.y + NEAR_MISS],
+      ]
+      const hits = map.queryRenderedFeatures(box, { layers: [LAYER.dots] })
+      if (!hits.length) return null
+      // Prefer the nearest centre, so a small dot sitting on top of a large one
+      // is reachable rather than permanently shadowed by it.
+      let best = hits[0]
+      let bestD = Infinity
+      for (const f of hits) {
+        const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates
+        const at = map.project([lon, lat])
+        const d = Math.hypot(at.x - p.x, at.y - p.y)
+        if (d < bestD) {
+          bestD = d
+          best = f
         }
       }
+      return best
+    }
 
-      if (moving) {
-        // Every frame is a different rotation, so caching could only ever miss.
-        drawBase(ctx)
-      } else {
-        const key = `${canvas.width}x${canvas.height}|${rotation.current[0].toFixed(4)},${rotation.current[1].toFixed(4)}|${scale.current.toFixed(5)}`
-        let base = baseLayer.current
-        if (!base || base.key !== key) {
-          const off = base?.canvas ?? document.createElement('canvas')
-          off.width = canvas.width
-          off.height = canvas.height
-          const octx = off.getContext('2d')!
-          octx.setTransform(dpr, 0, 0, dpr, 0, 0)
-          octx.clearRect(0, 0, w, h)
-          drawBase(octx)
-          base = { canvas: off, key }
-          baseLayer.current = base
-        }
-        ctx.drawImage(base.canvas, 0, 0, w, h)
+    /** Feature-state, so hover costs a repaint rather than a data upload. */
+    const setHover = (qid: string | null) => {
+      if (qid === hovered.current) return
+      if (hovered.current) {
+        map.setFeatureState({ source: SOURCE.dots, id: hovered.current }, { hover: false })
       }
-
-      // The strings belonging to whatever you are pointing at, lifted out of the
-      // faint mass beneath. Drawn per frame rather than baked into the cache
-      // because they follow the selection, which changes without the camera
-      // moving — and there are only ever a handful.
-      const focus = selectedRef.current ?? hovered.current
-      if (focus && !moving && linksRef.current.length) {
-        const linkPath = geoPath(projection, ctx)
-        ctx.beginPath()
-        let any = false
-        for (const l of linksRef.current) {
-          if (l.a !== focus && l.b !== focus) continue
-          linkPath({
-            type: 'LineString',
-            coordinates: [
-              [l.alon, l.alat],
-              [l.blon, l.blat],
-            ],
-          } as unknown as GeoPermissibleObjects)
-          any = true
-        }
-        if (any) {
-          ctx.strokeStyle = LINK_ACTIVE
-          ctx.lineWidth = 1.2
-          ctx.stroke()
-        }
-      }
-
-      const lit = litRef.current
-      // Visible points, projected once and reused for drawing, labelling and
-      // hit-testing, so what you can click is exactly what you can see.
-      const visible = []
-      for (const p of pointsRef.current) {
-        // Backface culling — without it, dots on the far side draw through the planet.
-        if (geoDistance([p.lon, p.lat], centre) > Math.PI / 2) continue
-        const xy = projection([p.lon, p.lat])
-        if (!xy) continue
-        visible.push({ p, x: xy[0], y: xy[1], r: radiusOf(p) })
-      }
-      visibleRef.current = visible
-
-      // Big dots first, so a small one is drawn on top and stays clickable.
-      visible.sort((a, b) => b.r - a.r)
-
-      // A highlight from the menu behaves like a spotlight: everything outside
-      // it recedes so the country reads as a shape rather than as scattered
-      // brighter dots among equally bright ones.
-      const spot = highlightRef.current
-      for (const v of visible) {
-        const isSelected = v.p.qid === selectedRef.current
-        const inSpot = Boolean(spot?.has(v.p.qid))
-        const isHovered = v.p.qid === hovered.current || inSpot
-        const isLit = (!lit || lit.has(v.p.qid)) && (!spot || inSpot)
-
-        ctx.beginPath()
-        ctx.arc(v.x, v.y, v.r, 0, Math.PI * 2)
-        if (isSelected) {
-          ctx.fillStyle = 'rgba(255,255,255,.95)'
-          ctx.strokeStyle = '#fff'
-        } else if (isLit && modeRef.current === 'colour') {
-          const [r, g, b] = rampAt(rampPos(v.p.tracks))
-          ctx.fillStyle = `rgba(${r},${g},${b},${isHovered ? 1 : 0.85})`
-          ctx.strokeStyle = `rgb(${r},${g},${b})`
-        } else if (isLit) {
-          ctx.fillStyle = isHovered ? 'rgba(30,215,96,.9)' : 'rgba(29,185,84,.5)'
-          ctx.strokeStyle = '#1ed760'
-        } else {
-          ctx.fillStyle = 'rgba(120,120,120,.12)'
-          ctx.strokeStyle = 'rgba(150,150,150,.25)'
-        }
-        ctx.lineWidth = isSelected || isHovered ? 1.6 : 0.8
-        ctx.fill()
-        ctx.stroke()
-      }
-
-      // Labels, densest-first, skipping any that would collide with a label
-      // already placed or with another dot. Zooming in frees space, so names
-      // appear progressively rather than by a fixed popularity cut-off.
-      // Labels are the expensive pass — an all-pairs collision test plus text
-      // rendering — and they are unreadable mid-drag anyway. Skipping them while
-      // the globe is actually moving is where the frame budget comes back.
-      if (moving) {
-        lastPaint.current = performance.now()
-        return
-      }
-
-      ctx.font = LABEL_FONT
-      const placed: Box[] = []
-      const byWeight = [...visible].sort((a, b) => b.p.tracks - a.p.tracks)
-      for (const v of byWeight) {
-        const isSelected = v.p.qid === selectedRef.current
-        // Only a dot the cursor is genuinely on forces its label through. A
-        // whole-country spotlight must not, or Italy would draw 22 overlapping
-        // names at once.
-        const isHovered = v.p.qid === hovered.current
-        if (lit && !lit.has(v.p.qid) && !isSelected) continue
-        // Outside the spotlight, names go quiet along with the dots.
-        if (spot && !spot.has(v.p.qid) && !isSelected) continue
-
-        let width = textWidths.current.get(v.p.name)
-        if (width === undefined) {
-          width = ctx.measureText(v.p.name).width
-          textWidths.current.set(v.p.name, width)
-        }
-        const box = { x: v.x + v.r + 4, y: v.y - 7, w: width, h: 14 }
-
-        // A hovered or selected dot always gets its name, even in a crowd.
-        if (!isSelected && !isHovered) {
-          if (box.x + box.w > w || box.y < 0 || box.y + box.h > h) continue
-          if (placed.some((q) => intersects(q, box))) continue
-          // A dimmed dot should not veto a spotlit name — only dots that are
-          // themselves visible can get in the way.
-          if (
-            visible.some(
-              (o) => o !== v && (!spot || spot.has(o.p.qid)) && circleHitsBox(o, box)
-            )
-          )
-            continue
-        }
-        placed.push(box)
-
-        ctx.fillStyle = isSelected || isHovered ? '#fff' : 'rgba(255,255,255,.62)'
-        if (isSelected || isHovered) {
-          // A dark plate keeps the name readable over land or another dot.
-          ctx.fillStyle = 'rgba(0,0,0,.55)'
-          ctx.fillRect(box.x - 3, box.y - 1, box.w + 6, box.h + 2)
-          ctx.fillStyle = '#fff'
-        }
-        ctx.fillText(v.p.name, box.x, v.y + 4)
-      }
-      lastPaint.current = performance.now()
+      hovered.current = qid
+      if (qid) map.setFeatureState({ source: SOURCE.dots, id: qid }, { hover: true })
+      map.getCanvas().style.cursor = qid ? 'pointer' : ''
+      onHoverRef.current(qid)
+      syncFocusLabels()
     }
 
     /**
-     * Only draw when something is actually moving.
-     *
-     * The loop used to repaint 60 times a second forever — projecting 177
-     * country outlines and every dot — even with the globe sitting perfectly
-     * still. That is the idle cost that made the whole page feel heavy.
+     * The names that force their way through the collision grid: whatever the
+     * cursor is on, and whatever is selected. Never more than two features, so
+     * rebuilding the source outright is cheaper than reasoning about a diff.
      */
-    let wasMoving = false
-    const loop = () => {
-      loopAlive.current = performance.now()
-      const [vx, vy] = velocity.current
-      const moving =
-        dragging.current ||
-        target.current !== null ||
-        targetScale.current !== null ||
-        Math.abs(vx) > 0.01 ||
-        Math.abs(vy) > 0.01
-      // Motion frames are drawn at reduced detail — coarse coastlines, no
-      // outlines, no labels. So the frame where motion ends has to be redrawn at
-      // full detail, or the globe would come to rest on a stripped-down picture.
-      if (wasMoving && !moving) dirty.current = true
-      wasMoving = moving
-      if (moving || dirty.current) {
-        dirty.current = false
-        render()
-      }
-      frame = requestAnimationFrame(loop)
+    const syncFocusLabels = () => {
+      const src = map.getSource(SOURCE.focus) as GeoJSONSource | undefined
+      if (!src) return
+      const qids = [selectedRef.current, hovered.current].filter(
+        (q, i, a): q is string => Boolean(q) && a.indexOf(q) === i
+      )
+      src.setData({
+        type: 'FeatureCollection',
+        features: qids.flatMap((qid) => {
+          const p = byQidRef.current.get(qid)
+          if (!p) return []
+          return [
+            {
+              type: 'Feature' as const,
+              geometry: { type: 'Point' as const, coordinates: [p.lon, p.lat] },
+              properties: { name: p.name },
+            },
+          ]
+        }),
+      })
     }
+    syncFocusRef.current = syncFocusLabels
 
-    render() // paint immediately, before any frame is scheduled
-    renderRef.current = render
-    renderNow.current = render
-    frame = requestAnimationFrame(loop)
+    map.on('mousemove', (e) => {
+      const id = dotAt(e.point)?.id
+      setHover(id == null ? null : String(id))
+    })
+    map.on('mouseout', () => setHover(null))
 
-    // Timers still fire where rAF and ResizeObserver are throttled to nothing,
-    // so these are the fallback that guarantees a first paint once the element
-    // has actually been laid out.
-    const retries = [0, 50, 250].map((ms) => window.setTimeout(render, ms))
+    /**
+     * Selection happens here and nowhere else.
+     *
+     * MapLibre does not fire `click` at the end of a drag, which is the whole of
+     * what the canvas globe needed a travel threshold for: letting go of the
+     * planet with the cursor over a dot used to tune into wherever your hand
+     * happened to stop.
+     */
+    map.on('click', (e) => {
+      const hit = dotAt(e.point)
+      if (hit?.id != null) onSelectRef.current(String(hit.id))
+    })
 
-    // A resize changes the canvas backing store, which clears it; repaint at
-    // once rather than waiting for a frame that may never come.
-    const observer = new ResizeObserver(() => render())
-    observer.observe(canvas)
+    // A tap has no hover to leave behind, and leaving one set would keep a name
+    // and a lit dot on screen with nothing pointing at them.
+    map.on('touchend', () => setHover(null))
+
+    /**
+     * A lost context leaves a black hole where the planet was, and it happens
+     * for reasons that have nothing to do with this app — a laptop waking, a
+     * driver reset, another tab exhausting the GPU. The style survives; only the
+     * GPU-side resources do not, so asking for a repaint is enough.
+     */
+    const canvas = map.getCanvas()
+    // preventDefault is what tells the browser to bother restoring it at all.
+    const onLost = (e: Event) => e.preventDefault()
+    const onRestored = () => map.triggerRepaint()
+    canvas.addEventListener('webglcontextlost', onLost)
+    canvas.addEventListener('webglcontextrestored', onRestored)
+
+    // Last, so that the first `applyAll` runs with every handler above it in
+    // place — `syncFocusLabels` in particular, which it calls.
+    const styleReady = () => {
+      if (self.styled) return
+      self.styled = true
+      reframe()
+      applyAll(map)
+    }
+    map.on('style.load', styleReady)
+    // A style given as an object rather than as a URL is parsed synchronously,
+    // inside the constructor — so `style.load` has already fired by the time
+    // there is anything listening for it, and waiting on the event alone leaves
+    // the map permanently empty. `getLayer` is the probe because it answers
+    // without throwing whether or not the style is up.
+    if (map.getLayer(LAYER.dots)) styleReady()
 
     return () => {
-      cancelAnimationFrame(frame)
-      retries.forEach(window.clearTimeout)
-      observer.disconnect()
-      renderRef.current = null
+      canvas.removeEventListener('webglcontextlost', onLost)
+      canvas.removeEventListener('webglcontextrestored', onRestored)
+      syncFocusRef.current = null
+      hovered.current = null
+      bound.current = null
+      map.remove()
     }
-  }, [projectionFor, radiusOf])
+  }, [])
 
-  // Props that change the picture but not the motion still need a repaint when
-  // the animation loop is throttled.
+  // ----- keeping it up to date -----
+
+  useEffect(() => withMap(setDots), [dotsData])
+  useEffect(() => withMap(setLinks), [linksData, linkMode])
+  useEffect(() => withMap((map) => applyDotMode(map, dotMode)), [dotMode])
+
+  const prevSelected = useRef<string | null>(null)
   useEffect(() => {
-    markDirty()
-  }, [points, litQids, selectedQid, dotMode])
-
-  // ----- interaction -----
-
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    dragging.current = true
-    dragDistance.current = 0
-    last.current = [e.clientX, e.clientY]
-    velocity.current = [0, 0]
-    target.current = null
-    e.currentTarget.setPointerCapture(e.pointerId)
-    e.currentTarget.classList.add('dragging')
-  }
-
-  /**
-   * The dot under a canvas position.
-   *
-   * Runs against what was actually drawn, and prefers the *smallest* circle
-   * containing the point: where a small dot overlaps a large one, the small one
-   * is drawn on top and is the harder of the two to hit any other way, so
-   * nearest-centre would make it permanently unclickable. Only when nothing
-   * contains the point does it fall back to the nearest within a small slack.
-   */
-  const pointAt = (px: number, py: number) => {
-    const lit = litRef.current
-    let contained: Placed | null = null
-    let nearest: Placed | null = null
-    let nearestD = Infinity
-
-    for (const v of visibleRef.current) {
-      if (lit && !lit.has(v.p.qid)) continue
-      const d = Math.hypot(v.x - px, v.y - py)
-      if (d <= v.r) {
-        if (!contained || v.r < contained.r) contained = v
-      } else if (d - v.r < nearestD) {
-        nearestD = d - v.r
-        nearest = v
+    withMap((map) => {
+      if (prevSelected.current && prevSelected.current !== selectedQid) {
+        map.setFeatureState({ source: SOURCE.dots, id: prevSelected.current }, { selected: false })
       }
-    }
-    if (contained) return contained.p
-    return nearest && nearestD <= NEAR_MISS ? nearest.p : null
-  }
-
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = e.currentTarget
-    const rect = canvas.getBoundingClientRect()
-    pointer.current = [e.clientX - rect.left, e.clientY - rect.top]
-
-    if (!dragging.current) {
-      const over = pointAt(pointer.current[0], pointer.current[1])
-      canvas.style.cursor = over ? 'pointer' : ''
-      const next = over?.qid ?? null
-      if (next !== hovered.current) {
-        hovered.current = next
-        onHover(next)
-        markDirty()
+      if (selectedQid) {
+        map.setFeatureState({ source: SOURCE.dots, id: selectedQid }, { selected: true })
       }
-      return
-    }
-    if (!last.current) return
-    const [lx, ly] = last.current
-    dragDistance.current += Math.abs(e.clientX - lx) + Math.abs(e.clientY - ly)
-    const k = 0.28 / scale.current
-    const dx = (e.clientX - lx) * k
-    const dy = (e.clientY - ly) * k
-    rotation.current = [rotation.current[0] + dx, rotation.current[1] - dy]
-    velocity.current = [dx * 0.5, -dy * 0.5]
-    last.current = [e.clientX, e.clientY]
+      setActiveLinks(map)
+      syncFocusRef.current?.()
+    })
+    prevSelected.current = selectedQid
+  }, [selectedQid])
 
-    // Deliberately not markDirty(). That paints synchronously, and a mouse
-    // reporting at 125Hz would then force ~125 full redraws a second on top of
-    // the ones the loop is already doing — frames past the refresh rate that
-    // nobody sees, but that still block the main thread, so pointer events queue
-    // up behind them and the drag itself goes heavy. The loop already redraws
-    // every frame while the globe is moving, so recording the rotation is enough.
-    dirty.current = true
-    const now = performance.now()
-    if (now - loopAlive.current > 100 && now - lastPaint.current > 12) {
-      // No loop to defer to — drive the paint from the input instead.
-      renderNow.current?.()
-    }
-  }
+  // ----- camera -----
 
-  const endDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    dragging.current = false
-    last.current = null
-    e.currentTarget.classList.remove('dragging')
+  useEffect(() => {
+    if (!flyTo) return
+    withMap((map) => {
+      const center: [number, number] = [flyTo.lon, flyTo.lat]
 
-    // Without a loop there is nothing to animate the inertia, and nothing to
-    // draw the full-detail frame once it has decayed — the globe would be left
-    // resting on a motion frame, with no coastline outlines and no labels. So
-    // where the loop is dead, let go of the throw and settle immediately.
-    if (performance.now() - loopAlive.current > 100) {
-      velocity.current = [0, 0]
-      markDirty()
-    }
-  }
+      // A country wants to be framed, not magnified. Asking the camera what
+      // would fit the box beats the old spread-to-scale heuristic, which had to
+      // be retuned by hand every time the aspect ratio of the window changed.
+      const framing =
+        (flyTo.bounds && map.cameraForBounds(flyTo.bounds, { padding: 90 })?.zoom) ??
+        flyTo.zoom ??
+        null
 
-  /**
-   * Selection happens here and nowhere else. Dragging used to re-select
-   * continuously as places passed under the screen centre, which meant the
-   * playing track changed while you were only trying to look around.
-   */
-  const onClick = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // A click still fires after a drag, so letting go of the globe with the
-    // cursor over a dot used to select that dot — you spun the world and it
-    // tuned into wherever your hand happened to stop. Only a pointer that
-    // barely moved counts as a click on something.
-    if (dragDistance.current > CLICK_SLOP) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const point = pointAt(e.clientX - rect.left, e.clientY - rect.top)
-    if (!point) return
-    onSelect(point.qid)
-  }
+      // A place wants a floor: if you have already zoomed past this, picking a
+      // dot just centres it and leaves your zoom alone. Running down a list
+      // therefore never yanks you back out — each row you pass either brings you
+      // closer or leaves the zoom alone.
+      const floor =
+        flyTo.zoomBack != null && framing != null ? framing - flyTo.zoomBack : flyTo.zoomAtLeast
 
-  /**
-   * Zooms toward the cursor: the geographic point under the pointer stays put,
-   * so you can magnify a cluster without first dragging it to the middle.
-   */
-  const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    const canvas = e.currentTarget
-    const rect = canvas.getBoundingClientRect()
-    const px = e.clientX - rect.left
-    const py = e.clientY - rect.top
+      const zoom =
+        floor != null
+          ? Math.max(map.getZoom(), floor)
+          : (framing ?? map.getZoom())
 
-    const before = projectionFor(canvas.clientWidth, canvas.clientHeight).invert?.([px, py])
-    scale.current = Math.max(
-      MIN_SCALE,
-      Math.min(MAX_SCALE, scale.current * (e.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP))
-    )
-    const after = projectionFor(canvas.clientWidth, canvas.clientHeight).invert?.([px, py])
+      // Duration from how far the planet has to turn, so a hop across a country
+      // is not given the same three seconds as a hop across the world.
+      const from = map.getCenter()
+      const turn = from.distanceTo(new LngLat(center[0], center[1]))
+      const duration = turn < 1_000_000 ? 1400 : 2400
 
-    // rotate() takes the negated centre, so the correction runs opposite to the
-    // drift: the geographic point that was under the cursor is put back there.
-    if (before && after) {
-      rotation.current = [
-        rotation.current[0] + (after[0] - before[0]),
-        Math.max(-80, Math.min(80, rotation.current[1] + (after[1] - before[1]))),
-      ]
-    }
-    target.current = null
-    markDirty()
-  }
+      // Short hops ease; long ones arc out and back in, which reads as one
+      // motion instead of a scramble across the surface.
+      if (turn < 1_000_000) {
+        map.easeTo({ center, zoom, duration, easing: (t) => -0.5 * (Math.cos(Math.PI * t) - 1) })
+      } else {
+        map.flyTo({ center, zoom, duration, curve: 1.42, speed: 1.2 })
+      }
+    })
+  }, [flyTo])
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="globe-canvas"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-      onClick={onClick as unknown as React.MouseEventHandler<HTMLCanvasElement>}
-      onWheel={onWheel}
-    />
-  )
+  return <div ref={container} className="globe-canvas" />
 }
