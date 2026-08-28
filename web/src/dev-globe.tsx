@@ -20,10 +20,13 @@ import type { MapPoint } from './lib/api'
 // app and useless for a check. getSource is called on every data push, so the
 // first one hands the instance over.
 const getSource = MapLibreMap.prototype.getSource
-MapLibreMap.prototype.getSource = function (id: string) {
+// Cast, because the real signature is generic in the source type it returns and
+// this override cannot honour that: it hands back whatever the map already had.
+// Nothing here reads the result, so the looser return is only ever passed on.
+MapLibreMap.prototype.getSource = function (this: MapLibreMap, id: string) {
   ;(window as unknown as { map: MapLibreMap }).map = this
   return getSource.call(this, id)
-}
+} as typeof MapLibreMap.prototype.getSource
 
 const place = (qid: string, name: string, lat: number, lon: number, tracks: number): MapPoint => ({
   qid,
@@ -70,7 +73,8 @@ function Harness() {
       flyTo={null}
       dotMode="size"
       links={[]}
-      linkMode="none"
+      nestLinks={[]}
+      collabs={false}
     />
   )
 }
@@ -218,8 +222,12 @@ async function run() {
   out.labelStandsDown = {
     litPixelsBefore: before,
     litPixelsAfter: after,
+    // `lit` reports the brightest pixel and the box it read as well as the
+    // count, for a run that comes back with nothing to say why. The verdict is
+    // about the count alone — comparing the reports themselves was comparing
+    // objects, which is never true, so this said WRONG whatever the map did.
     verdict:
-      before > 40 && after < before / 4
+      before.n > 40 && after.n < before.n / 4
         ? 'ok: feature state reaches the symbol layer, the name goes away'
         : 'WRONG: the name is still drawn — a forced copy would double it',
   }
