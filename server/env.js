@@ -27,6 +27,18 @@ export const config = {
 };
 
 /**
+ * Whether this copy is reachable only from the machine it runs on.
+ *
+ * Defined here rather than in api.js because auth.js needs the same answer:
+ * the setup screen is safe to expose, and allowed to overrule .env, precisely
+ * when nobody else can reach it. Two copies of this rule would drift.
+ */
+export function isLoopback() {
+  const host = process.env.MAPPIFY_HOST?.trim() || '127.0.0.1';
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/**
  * What MusicBrainz, Wikidata and Wikipedia are told they are talking to.
  *
  * All three ask that a User-Agent identify the application and offer a way to

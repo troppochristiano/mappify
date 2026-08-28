@@ -6,7 +6,7 @@ import type {
   StyleSpecification,
 } from 'maplibre-gl'
 import { rampAt } from './ramp'
-import type { DotMode, LinkMode } from './ramp'
+import type { DotMode } from './ramp'
 
 /**
  * Everything the map is made of, as data.
@@ -19,18 +19,29 @@ import type { DotMode, LinkMode } from './ramp'
 
 export const SOURCE = {
   earth: 'earth',
+  detail: 'detail',
   coast: 'coast',
   links: 'links',
+  nestLinks: 'nest-links',
+  linkEnds: 'link-ends',
   dots: 'dots',
+  friendDots: 'friend-dots',
   focus: 'focus',
 } as const
 
 export const LAYER = {
   space: 'space',
   earth: 'earth',
+  detail: 'detail',
   coast: 'coast',
+  countryFill: 'country-fill',
+  countryLine: 'country-line',
+  nestLinks: 'nest-links',
   links: 'links',
   linksActive: 'links-active',
+  linksHit: 'links-hit',
+  linkEnds: 'link-ends',
+  friendDots: 'friend-dots',
   dots: 'dots',
   labels: 'labels',
   focusLabels: 'focus-labels',
@@ -46,11 +57,50 @@ const DOT_STROKE = '#1ed760'
 const DIM_FILL = 'rgba(120,120,120,.12)'
 const DIM_STROKE = 'rgba(150,150,150,.25)'
 
+/**
+ * The country under the cursor.
+ *
+ * White rather than the accent green, which the dots already own: pointing at
+ * Italy should outline Italy, not add another green thing competing with the
+ * places inside it. It is the same white a selected dot takes, so "white means
+ * the one you mean" holds across the map.
+ */
+const COUNTRY_WASH = '#ffffff'
+const COUNTRY_WASH_ALPHA = 0.1
+const COUNTRY_EDGE = 'rgba(255,255,255,.85)'
+const COUNTRY_EDGE_ALPHA = 0.9
+
+/**
+ * A filter matching no country, which is what both highlight layers hold until
+ * something is hovered.
+ *
+ * An iso that cannot exist rather than a literal false: the shape of the
+ * expression then never changes, only the string inside it, so every setFilter
+ * is swapping like for like.
+ */
+export const HIGHLIGHT_NONE: ExpressionSpecification = ['==', ['get', 'iso'], '--']
+
+/** The same filter, aimed at one country. */
+export const countryFilter = (iso: string | null): ExpressionSpecification =>
+  iso ? ['==', ['get', 'iso'], iso] : HIGHLIGHT_NONE
+
 /** The colour a string takes when it belongs to the place you have selected. */
 const LINK_ACTIVE = 'rgba(30,215,96,.75)'
 
 /** Uniform dot size in colour mode, where magnitude has moved to the fill. */
 const UNIFORM_R = 4.5
+
+/**
+ * The default colour of an imported library, and how far its rings sit outside
+ * your own dots.
+ *
+ * Amber because it has to survive being next to the accent green at world view
+ * and still read as a different dataset rather than a different *state* of the
+ * same one — white is already "the dot you mean" and the ramp already owns
+ * green through gold.
+ */
+export const FRIEND_COLOUR = '#f0a726'
+const FRIEND_R = 1.6
 
 const state = (key: string): ExpressionSpecification => [
   'boolean',
@@ -58,8 +108,28 @@ const state = (key: string): ExpressionSpecification => [
   false,
 ]
 
-/** Either of the two things that mean "this is the dot you are dealing with". */
-const focused: ExpressionSpecification = ['any', state('hover'), state('selected')]
+/**
+ * The things that mean "this is the dot you are dealing with".
+ *
+ * `linked` is that same statement made from the other end: the cursor is on an
+ * arc, and these are the two places it joins. A collaboration is a relationship
+ * between dots, so lighting the thread has to light its ends — otherwise the
+ * lit line still leaves you hunting for what it connects.
+ */
+const focused: ExpressionSpecification = [
+  'any',
+  state('hover'),
+  state('selected'),
+  state('linked'),
+]
+
+/**
+ * Set on exactly the dots whose names the focus layer is drawing, and on no
+ * others — so a name gives up its own label only when a forced copy is about to
+ * take its place. `hover` is not the same question: most hovered dots keep their
+ * own label and are only brightened.
+ */
+const forced: ExpressionSpecification = state('forced')
 
 /**
  * The track→colour ramp, handed to the GPU as interpolation stops.
@@ -95,11 +165,15 @@ function rampStops(alpha: number): ExpressionSpecification {
  * their largest.
  */
 const FILL_Z = 2.2
-export function circleRadius(mode: DotMode): DataDrivenPropertyValueSpecification<number> {
+export function circleRadius(
+  mode: DotMode,
+  /** Scales the whole curve — the friend ring sits outside your dot. */
+  factor = 1
+): DataDrivenPropertyValueSpecification<number> {
   const grow = (k: number): ExpressionSpecification =>
     mode === 'colour'
-      ? ['literal', UNIFORM_R * Math.min(1.6, k)]
-      : ['+', 2, ['*', ['get', 'size'], 16 * k]]
+      ? ['literal', UNIFORM_R * Math.min(1.6, k) * factor]
+      : ['+', 2 * factor, ['*', ['get', 'size'], 16 * k * factor]]
   return [
     'interpolate',
     ['linear'],
@@ -115,6 +189,13 @@ export function circleRadius(mode: DotMode): DataDrivenPropertyValueSpecificatio
  * A selected dot is white, a dimmed one recedes, and otherwise magnitude is
  * either in the fill (colour mode) or in the radius (size mode). Order matters:
  * selection wins over everything, dimming loses to it.
+ *
+ * `linked` is the one thing besides selection that beats the dimming, and it has
+ * to: while an arc is open every other dot is dimmed, and that is exactly when
+ * you are running the cursor over the quiet mass asking which thread goes where.
+ * A hovered arc whose ends stayed grey would answer half the question. A dot's
+ * *own* hover still loses to the dimming — pointing at a dot outside the
+ * spotlight is not a claim about the arc you are reading.
  */
 export function circleColor(mode: DotMode): DataDrivenPropertyValueSpecification<string> {
   const normal = mode === 'colour' ? rampStops(0.85) : DOT_GREEN
@@ -122,6 +203,7 @@ export function circleColor(mode: DotMode): DataDrivenPropertyValueSpecification
   return [
     'case',
     state('selected'), SELECTED,
+    state('linked'), hot,
     ['get', 'dim'], DIM_FILL,
     focused, hot,
     normal,
@@ -133,6 +215,7 @@ export function circleStrokeColor(mode: DotMode): DataDrivenPropertyValueSpecifi
   return [
     'case',
     state('selected'), '#fff',
+    state('linked'), normal,
     ['get', 'dim'], DIM_STROKE,
     normal,
   ] as DataDrivenPropertyValueSpecification<string>
@@ -140,7 +223,7 @@ export function circleStrokeColor(mode: DotMode): DataDrivenPropertyValueSpecifi
 
 const STROKE_WIDTH: DataDrivenPropertyValueSpecification<number> = [
   'case',
-  ['any', state('selected'), state('hover')], 1.6,
+  ['any', state('selected'), state('hover'), state('linked')], 1.6,
   0.8,
 ]
 
@@ -153,29 +236,98 @@ const STROKE_WIDTH: DataDrivenPropertyValueSpecification<number> = [
  * Chicago–Atlanta's 37 tracks reads as a thread while a one-off stays a whisper,
  * with nothing to fall between bands.
  */
-function linkPaint(mode: LinkMode) {
-  if (mode === 'nesting') {
-    // A borough is inside its city, and that is the whole statement — no
-    // magnitude to encode. They are also short, joining dots that already
-    // overlap, so they have to be brighter than a collaboration arc to be
-    // visible at that length.
-    return {
-      'line-color': 'rgba(160,210,255,.72)',
-      'line-width': 1.3,
-    }
+/**
+ * What an arc looks like when the cursor is on it, or when it is the one being
+ * read about.
+ *
+ * Bright enough to pick out of the mass, because that is the whole job: a
+ * collaboration arc at rest is a whisper of nine percent alpha, and the thing a
+ * hover has to answer is "which of these dozen crossing threads am I about to
+ * click". Kept as one colour rather than a ramp — at that point the arc's
+ * magnitude is being read off the panel, not off the line.
+ */
+const LINK_HOT = 'rgba(190,225,255,.95)'
+
+/**
+ * The mass, while one arc is being read.
+ *
+ * A third of the resting floor, which is already only nine percent alpha — at
+ * this point the other six hundred arcs are texture rather than lines, which is
+ * the intent: the collaboration you clicked should be the only lit thing on the
+ * planet. They stay askable, though. The hit layer is untouched and `hot` still
+ * wins, so running the cursor across the quiet mass lights whatever is under it
+ * and clicking moves the selection. The dimming is a state you can see out of.
+ */
+const LINK_QUIET = 'rgba(125,180,235,.035)'
+const LINK_QUIET_NEST = 'rgba(160,210,255,.06)'
+
+/**
+ * Containment, drawn as background.
+ *
+ * A borough is inside its city, and that is the whole statement — no magnitude
+ * to encode. It used to be painted at .72 and width 1.3, which was right while
+ * it had the map to itself: the arcs are short, joining dots that already
+ * overlap, so at that length they need weight to register at all. Sharing the
+ * map with the collaboration arcs changed the question. A one-track collab is
+ * .09; anything approaching .72 sitting on top of that is not a second layer of
+ * information, it is a lid. So it sits low enough to read as the shape of the
+ * data rather than as a finding about it.
+ *
+ * Nothing hot here: nesting is not hit-tested (see `linkAt` in Globe.tsx), so
+ * no arc in this source is ever hovered or selected and a `case` on state
+ * would be an expression evaluated per feature to always take the same branch.
+ *
+ * @param quiet a collaboration is being read, so even the background steps back.
+ */
+export function nestPaint(quiet = false) {
+  return {
+    'line-color': quiet ? LINK_QUIET_NEST : 'rgba(160,210,255,.34)',
+    'line-width': quiet ? 0.6 : 0.9,
   }
+}
+
+/**
+ * @param quiet one arc is selected, so the rest are only context. No expression
+ * can ask "is any other feature selected", so it has to arrive as a parameter —
+ * and it has to arrive *here*, because applyCollabPaint reassigns these two
+ * properties wholesale and anything bolted on beside them is lost the next time
+ * an arc is selected.
+ */
+function linkPaint(quiet = false) {
+
+  // Both states go through the same `case`, so a repaint cannot drop them —
+  // applyCollabPaint reassigns these two properties wholesale, and a hover rule
+  // living outside this function would survive exactly until the first one.
+  const hot: ExpressionSpecification = ['any', state('hover'), state('selected')]
+
   return {
     'line-color': [
-      'interpolate', ['linear'], ['get', 'tracks'],
-      1, 'rgba(125,180,235,.09)',
-      3, 'rgba(135,190,240,.20)',
-      10, 'rgba(150,205,255,.42)',
+      'case',
+      hot, LINK_HOT,
+      quiet
+        ? LINK_QUIET
+        : [
+            'interpolate', ['linear'], ['get', 'tracks'],
+            1, 'rgba(125,180,235,.09)',
+            3, 'rgba(135,190,240,.20)',
+            10, 'rgba(150,205,255,.42)',
+          ],
     ] as DataDrivenPropertyValueSpecification<string>,
     'line-width': [
-      'interpolate', ['linear'], ['get', 'tracks'],
-      1, 0.5,
-      3, 0.7,
-      10, 1.1,
+      'case',
+      // A flat 2.2 rather than a scaled version of the ramp: the faintest arcs
+      // are half a pixel, and 1.5× of nothing is still nothing to aim at.
+      hot, 2.2,
+      // Flat when quiet, for the same reason the hot width is flat: a fraction
+      // of half a pixel is not a thinner line, it is no line.
+      quiet
+        ? 0.4
+        : [
+            'interpolate', ['linear'], ['get', 'tracks'],
+            1, 0.5,
+            3, 0.7,
+            10, 1.1,
+          ],
     ] as DataDrivenPropertyValueSpecification<number>,
   }
 }
@@ -210,7 +362,38 @@ const LABEL_PAINT = {
   'text-halo-blur': 0.4,
 } as const
 
-export function buildStyle(glyphs: string, tiles: string, maxzoom: number): StyleSpecification {
+/**
+ * Where the photographed world takes over from the painted one.
+ *
+ * Blue Marble is one image of the whole planet: it is genuinely resolved to
+ * about z5 and is invented past that, so on the way into a city it turns to
+ * mud. Satellite tiles carry the same ground at street scale, which is the
+ * whole of what "zoom in and see the city from above" needs — but they are a
+ * network round trip per tile, so they are not asked for until the base has
+ * actually run out.
+ *
+ * The handover is a crossfade rather than a switch, because a hard swap between
+ * two differently-coloured pictures of the same coastline reads as a glitch.
+ * Both layers stay drawn: if the satellite tiles never arrive — offline, or a
+ * provider that is down — the missing ones simply are not painted and Blue
+ * Marble shows through, which is the old behaviour rather than a black hole.
+ */
+const DETAIL_IN = 4.5
+const DETAIL_FULL = 6.5
+
+/** What the detail imagery is asked for, and how deep it goes. */
+export type Detail = {
+  tiles: string
+  maxzoom: number
+  attribution?: string
+}
+
+export function buildStyle(
+  glyphs: string,
+  tiles: string,
+  maxzoom: number,
+  detail?: Detail
+): StyleSpecification {
   return {
     version: 8,
     glyphs,
@@ -232,8 +415,43 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
         // instant instead of a re-download.
         volatile: false,
       },
+      ...(detail
+        ? {
+            [SOURCE.detail]: {
+              type: 'raster' as const,
+              tiles: [detail.tiles],
+              // Web map services serve 256px tiles; declaring 512 would stretch
+              // every one of them to twice its size and undo the detail this
+              // layer exists for.
+              tileSize: 256,
+              maxzoom: detail.maxzoom,
+              attribution: detail.attribution,
+              volatile: false,
+            },
+          }
+        : {}),
       [SOURCE.coast]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
-      [SOURCE.links]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      [SOURCE.links]: {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        // An arc's natural key is the pair of places it joins, which is a
+        // string — and a string cannot be a top-level feature id here, for the
+        // reason set out on the dots source below: GeoJSON sources are encoded
+        // as vector tiles, where ids are numeric, so a string id silently
+        // becomes 0 and every arc ends up sharing one feature-state. `id` is
+        // composed in linksToGeoJSON as `${a}~${b}` and promoted here.
+        promoteId: 'id',
+      },
+      // Its own source rather than a filter on the one above: the two hold
+      // different relations, are painted differently, and only one of them is
+      // ever asked what is under the cursor. promoteId for the same reason as
+      // the links source — a string id would silently collapse to 0 — even
+      // though nothing sets feature-state on these today.
+      [SOURCE.nestLinks]: {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+        promoteId: 'id',
+      },
       [SOURCE.dots]: {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -245,6 +463,23 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
         // travels, and qid is what the rest of the app already identifies a
         // place by.
         promoteId: 'qid',
+      },
+      // No promoteId. The friend layer carries no feature-state in this version,
+      // and promoting qid here would be a trap waiting for the version that
+      // does: both sources hold the *same* qids for shared cities — that is the
+      // entire point of the overlay — so a feature-state keyed on qid alone
+      // would light your dot and theirs together. Namespace the id before
+      // adding any hover or selection here.
+      // No promoteId either, and for a simpler reason than the friend rings:
+      // this source holds no feature-state at all. It is two points at most, and
+      // they are drawn or they are not.
+      [SOURCE.linkEnds]: {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      },
+      [SOURCE.friendDots]: {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
       },
       [SOURCE.focus]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     },
@@ -269,6 +504,68 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
           'raster-fade-duration': 180,
         },
       },
+      ...(detail
+        ? [
+            {
+              id: LAYER.detail,
+              type: 'raster',
+              source: SOURCE.detail,
+              // No tiles requested at all until the fade is about to start, so
+              // spinning the whole planet around costs nothing.
+              minzoom: DETAIL_IN,
+              paint: {
+                'raster-opacity': [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  DETAIL_IN,
+                  0,
+                  DETAIL_FULL,
+                  1,
+                ],
+                // The same holding-back the base gets, for the same reason: at
+                // world view a mid-green dot has to survive being over snow.
+                // It lifts on the way in, where there are few dots on screen and
+                // the picture underneath is the point.
+                'raster-brightness-max': ['interpolate', ['linear'], ['zoom'], 5, 0.78, 8, 1],
+                'raster-saturation': ['interpolate', ['linear'], ['zoom'], 5, -0.15, 8, 0],
+                'raster-fade-duration': 180,
+              },
+            } as LayerSpecification,
+          ]
+        : []),
+      // The country under the cursor, on the same source as the outline above:
+      // a wash to say which landmass, and a border bright enough to read at
+      // world view. Both start filtered to nothing — HIGHLIGHT_NONE — and the
+      // component swaps in an iso match on hover.
+      //
+      // Below the coast layer rather than above it, so the faint global outline
+      // still draws over the wash and the highlighted country does not lose its
+      // internal coastline detail.
+      {
+        id: LAYER.countryFill,
+        type: 'fill',
+        source: SOURCE.coast,
+        filter: HIGHLIGHT_NONE,
+        paint: {
+          'fill-color': COUNTRY_WASH,
+          'fill-opacity': COUNTRY_WASH_ALPHA,
+        },
+      },
+      {
+        id: LAYER.countryLine,
+        type: 'line',
+        source: SOURCE.coast,
+        filter: HIGHLIGHT_NONE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': COUNTRY_EDGE,
+          // Thicker as you go in, but never hairline at world view, which is
+          // exactly where the whole country has to be readable at a glance.
+          'line-width': ['interpolate', ['linear'], ['zoom'], 0, 1.2, 4, 1.8, 8, 2.4],
+          'line-opacity': COUNTRY_EDGE_ALPHA,
+        },
+      },
       {
         id: LAYER.coast,
         type: 'line',
@@ -279,7 +576,29 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
           // Invisible while the imagery still has detail of its own, and only
           // fading in past the bottom of the tile pyramid, where the photo goes
           // soft and a coastline is the only thing left to navigate by.
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 5.5, 0, 8.5, 0.5],
+          // Without detail imagery this is the only thing left to navigate by
+          // past the pyramid, so it fades in and stays. With it, the coastline
+          // is only cover for the crossfade: these outlines are 110m-generalised
+          // and by city scale they cut visibly across the real shoreline, so
+          // they leave again as soon as the photograph is carrying orientation
+          // on its own.
+          'line-opacity': detail
+            ? ['interpolate', ['linear'], ['zoom'], 5, 0, 5.8, 0.45, 6.8, 0]
+            : ['interpolate', ['linear'], ['zoom'], 5.5, 0, 8.5, 0.5],
+
+        },
+      },
+      // Beneath the collaboration arcs, and listed first because that is what
+      // "beneath" means here. Structure goes under findings.
+      {
+        id: LAYER.nestLinks,
+        type: 'line',
+        source: SOURCE.nestLinks,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          ...nestPaint(),
+          'line-color-transition': { duration: 220 },
+          'line-width-transition': { duration: 220 },
         },
       },
       {
@@ -287,7 +606,35 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
         type: 'line',
         source: SOURCE.links,
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: linkPaint('collabs'),
+        // On the literal rather than in linkPaint: applyCollabPaint never
+        // reassigns transitions, so restating them on every repaint would be
+        // work with no effect.
+        paint: {
+          ...linkPaint(),
+          'line-color-transition': { duration: 220 },
+          'line-width-transition': { duration: 220 },
+        },
+      },
+      {
+        id: LAYER.linksHit,
+        type: 'line',
+        source: SOURCE.links,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        /**
+         * Nothing to look at — this layer exists to be *asked* about.
+         *
+         * The arcs it shadows are between half a pixel and one wide, and a
+         * one-pixel target is not a target: on a globe covered in crossing
+         * threads you would be hunting for the cursor rather than for the
+         * collaboration. So the pointer aims at a fat invisible copy instead,
+         * and `queryRenderedFeatures` reports the arc underneath it.
+         *
+         * Invisible via opacity rather than `visibility: none`, which is the
+         * whole trick: a layer that is not visible is not rendered, and a layer
+         * that is not rendered cannot be queried. Zero-opacity still counts as
+         * drawn, so the geometry stays askable while nothing reaches the screen.
+         */
+        paint: { 'line-opacity': 0, 'line-width': 14 },
       },
       {
         id: LAYER.linksActive,
@@ -297,6 +644,24 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
         filter: ['==', ['get', 'a'], ' '],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': LINK_ACTIVE, 'line-width': 1.2 },
+      },
+      // With the link layers, because it belongs to the arc rather than to the
+      // library — and below both dot layers, so a real dot always outranks a
+      // placeholder if a filter change ever restores one at the same spot.
+      {
+        id: LAYER.linkEnds,
+        type: 'circle',
+        source: SOURCE.linkEnds,
+        paint: linkEndPaint(),
+      },
+      // Below the dots, so your own library always holds the foreground and a
+      // shared city reads as your dot inside their ring rather than the other
+      // way round. Empty until a friend is picked, so it costs nothing.
+      {
+        id: LAYER.friendDots,
+        type: 'circle',
+        source: SOURCE.friendDots,
+        paint: friendPaint(FRIEND_COLOUR),
       },
       {
         id: LAYER.dots,
@@ -326,19 +691,31 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
         },
         paint: {
           ...LABEL_PAINT,
-          // Stand down for whatever the focus layer is about to draw, or the
-          // name appears twice — once placed by the collision grid and once
-          // forced through on top of it.
+          // Pointing at a dot whose name is already on screen brightens that
+          // name where it stands. It does not get a second, forced copy — that
+          // is what the doubling was: the collision grid's placement and the
+          // focus layer's override, a few pixels apart, both drawn.
+          //
+          // Weight cannot join in. text-font is a layout property, and layout
+          // properties cannot read feature state at all, which is also why the
+          // forced label needs a layer of its own rather than a case expression
+          // here. Colour and halo are the whole of the hover treatment.
+          'text-color': ['case', focused, '#fff', LABEL_PAINT['text-color']],
+          'text-halo-width': ['case', focused, 1.6, LABEL_PAINT['text-halo-width']],
+          // Stand down only for a name the focus layer is actually drawing —
+          // one whose own label was collided away, or dimmed out of this layer
+          // entirely — never merely because it is hovered.
           //
           // Hidden rather than filtered out. A filter would drop the feature
           // from the layer entirely, freeing the slot it was holding, and every
           // name around it would shuffle to fill the gap — so pointing at a dot
           // would rearrange the map. Going transparent keeps the slot reserved,
-          // which is what makes the swap invisible. It also costs nothing:
-          // paint properties read feature state without re-laying out symbols,
-          // and layout properties like text-allow-overlap cannot read it at all,
-          // which is why the forced label needs its own layer in the first place.
-          'text-opacity': ['case', focused, 0, 1],
+          // which is what makes the swap invisible.
+          'text-opacity': ['case', forced, 0, 1],
+          // Instantly, or the fading-out original and the forced copy overlap
+          // for the length of the default transition — the doubling again, just
+          // brief enough to read as a flicker.
+          'text-opacity-transition': { duration: 0 },
         },
       },
       {
@@ -362,6 +739,69 @@ export function buildStyle(glyphs: string, tiles: string, maxzoom: number): Styl
   }
 }
 
+/**
+ * A friend's places: rings, not discs.
+ *
+ * The two libraries overlap on exactly the cities the comparison is about, so
+ * co-location is the normal case rather than an edge case — and two filled
+ * circles at one coordinate means one of them is simply invisible. A hollow ring
+ * a little larger than your dot puts the shared city on screen as your green
+ * centre inside their halo, which is the comparison drawn rather than described.
+ *
+ * No ramp here on purpose. Yours already encodes magnitude in colour (in colour
+ * mode) and in radius; a second ramp would give the eye two green-to-gold scales
+ * to tell apart. One flat hue, magnitude in radius only, so hue means *whose*
+ * and size means *how much*.
+ */
+/**
+ * An end of the selected arc that your library has no dot for.
+ *
+ * These places are real. The globe counts primary credits — a dot means "music
+ * by someone from here" — while an arc counts every credit, because a track with
+ * only a lead artist connects nothing. So a place whose one artist appears
+ * solely as a featured credit is genuinely in the library and absent from the
+ * map, and 194 of the 696 collaboration arcs have at least one such end.
+ *
+ * Rather than let the arc terminate in nothing, the missing end is drawn — but
+ * only while that arc is selected, so the ordinary meaning of a dot is left
+ * intact. In the arc's own hot colour rather than the dot green, because this is
+ * part of the line and not part of your library; hollow, so it reads as a
+ * place-shaped absence. Distinct from the friend ring, which is amber and always
+ * drawn *around* a dot rather than alone.
+ *
+ * A fixed radius, deliberately: the marker has no magnitude to encode, which is
+ * precisely the fact it exists to state.
+ */
+export function linkEndPaint() {
+  return {
+    'circle-radius': [
+      'interpolate', ['linear'], ['zoom'],
+      FILL_Z, 4.5,
+      FILL_Z + 2.2, 6.5,
+    ] as DataDrivenPropertyValueSpecification<number>,
+    'circle-color': 'rgba(0,0,0,0)',
+    'circle-stroke-color': LINK_HOT,
+    'circle-stroke-width': 1.3,
+    'circle-stroke-opacity': 0.9,
+  }
+}
+
+export function friendPaint(colour: string) {
+  return {
+    'circle-radius': circleRadius('size', FRIEND_R),
+    'circle-color': 'rgba(0,0,0,0)',
+    'circle-stroke-color': colour,
+    'circle-stroke-width': 1.4,
+    'circle-stroke-opacity': 0.85,
+  }
+}
+
+/** Repaint the friend rings for a newly picked colour. No re-upload. */
+export function applyFriendColour(map: Map, colour: string) {
+  if (!map.getLayer(LAYER.friendDots)) return
+  map.setPaintProperty(LAYER.friendDots, 'circle-stroke-color', colour)
+}
+
 /** Repaint the dots for a different encoding. No source change, no re-upload. */
 export function applyDotMode(map: Map, mode: DotMode) {
   map.setPaintProperty(LAYER.dots, 'circle-radius', circleRadius(mode))
@@ -369,8 +809,18 @@ export function applyDotMode(map: Map, mode: DotMode) {
   map.setPaintProperty(LAYER.dots, 'circle-stroke-color', circleStrokeColor(mode))
 }
 
-export function applyLinkMode(map: Map, mode: LinkMode) {
-  const paint = linkPaint(mode)
-  map.setPaintProperty(LAYER.links, 'line-color', paint['line-color'])
-  map.setPaintProperty(LAYER.links, 'line-width', paint['line-width'])
+/**
+ * Quieten, or un-quieten, both relations at once.
+ *
+ * One call rather than two because they are one decision: an arc is being read,
+ * so everything that is not that arc steps back — the other collaborations and
+ * the containment underneath them alike.
+ */
+export function applyLinkQuiet(map: Map, quiet = false) {
+  const collab = linkPaint(quiet)
+  map.setPaintProperty(LAYER.links, 'line-color', collab['line-color'])
+  map.setPaintProperty(LAYER.links, 'line-width', collab['line-width'])
+  const nest = nestPaint(quiet)
+  map.setPaintProperty(LAYER.nestLinks, 'line-color', nest['line-color'])
+  map.setPaintProperty(LAYER.nestLinks, 'line-width', nest['line-width'])
 }

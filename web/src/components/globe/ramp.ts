@@ -22,20 +22,20 @@ export const DOT_MODES: { id: DotMode; label: string }[] = [
 ]
 
 /**
- * What the strings between places mean.
+ * Two relations, drawn together.
  *
- * `nesting` is containment — Brooklyn hanging off New York City — which is the
- * relation the browse menu walks, made visible on the map. `collabs` is who
- * recorded with whom. They answer different questions and overlaying both is
- * unreadable, so it is one or the other, or neither.
+ * `nesting` is containment — Brooklyn hanging off New York City — the relation
+ * the browse menu walks, made visible on the map. It is always drawn: it is
+ * structure rather than a finding, and hiding it left the dots looking like an
+ * unsorted scatter. `collabs` is who recorded with whom, and that is the one
+ * you turn on and off.
+ *
+ * This used to be one control of three, on the grounds that overlaying both was
+ * unreadable. The grounds were sound; the conclusion was not. Nesting is now
+ * painted far quieter than it was when it had the map to itself, and drawn
+ * underneath the collaboration arcs — so the two are legible together, which is
+ * what that argument was actually asking for. See `nestPaint` in layers.ts.
  */
-export type LinkMode = 'nesting' | 'collabs' | 'none'
-
-export const LINK_MODES: { id: LinkMode; label: string }[] = [
-  { id: 'nesting', label: 'nesting' },
-  { id: 'collabs', label: 'collabs' },
-  { id: 'none', label: 'no links' },
-]
 
 /**
  * Track counts are wildly skewed — one artist can hold 150 tracks while most

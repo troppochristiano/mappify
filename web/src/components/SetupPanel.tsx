@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useImportStatus } from '../lib/useImportStatus'
+import { SpotifyApp } from './SpotifyApp'
 
 /**
  * Connect + import, in the app. Everything here used to be a terminal command.
@@ -9,7 +10,7 @@ import { useImportStatus } from '../lib/useImportStatus'
  * opaque rejection on Spotify's own error page: Development Mode allows five
  * authorized users per client ID.
  */
-export function SetupPanel({ onClose }: { onClose: () => void }) {
+export function SetupPanel() {
   const qc = useQueryClient()
   const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
   // The same hook App calls, sharing one query. The poll and the map refresh
@@ -28,6 +29,7 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
   })
   // No onSuccess invalidation: the server is gone, so there is nothing to refetch.
   const quit = useMutation({ mutationFn: api.quit })
+
   const startImport = useMutation({
     mutationFn: api.startImport,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['import-status'] }),
@@ -38,21 +40,25 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
   const pct = s && s.total ? Math.round((s.done / s.total) * 100) : 0
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h1>Your library</h1>
-        <button className="close" onClick={onClose} aria-label="Close">×</button>
-      </div>
-
+    <div>
       <h2>Spotify</h2>
       {setup.data?.spotify.connected ? (
         <p className="panel-sub">Connected.</p>
       ) : (
         <>
           <p className="panel-sub">
-            Connect to import your Liked Songs and playlists. Spotify allows five
-            authorized accounts per app, so this only works for accounts added to
-            the app's allowlist.
+            {setup.data?.spotify.wrongApp ? (
+              <>
+                You were signed in through a different Spotify app, so those
+                tokens no longer work. Connect again to sign in through this one.
+              </>
+            ) : (
+              <>
+                Connect to import your Liked Songs and playlists. Spotify allows five
+                authorized accounts per app, so this only works for accounts added to
+                the app's allowlist.
+              </>
+            )}
           </p>
           <button className="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
             {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
@@ -64,6 +70,8 @@ export function SetupPanel({ onClose }: { onClose: () => void }) {
           )}
         </>
       )}
+
+      <SpotifyApp tone="panel" />
 
       <h2 style={{ marginTop: 20 }}>Origin index</h2>
       <p className="panel-sub">

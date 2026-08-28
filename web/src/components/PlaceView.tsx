@@ -74,8 +74,6 @@ export function PlaceView({
   nested,
   onNavigate,
   onHoverRow,
-  onClose,
-  title,
   subtitle,
   actions,
   body,
@@ -85,8 +83,6 @@ export function PlaceView({
   onNavigate: (s: PlaceSelection) => void
   /** Hovering a row lights the same dots as hovering them on the globe. */
   onHoverRow?: (s: PlaceSelection | null) => void
-  onClose: () => void
-  title: string
   subtitle?: ReactNode
   actions?: ReactNode
   body?: ReactNode
@@ -95,14 +91,11 @@ export function PlaceView({
   const parent = crumbs.length > 1 ? crumbs[crumbs.length - 2] : null
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h1>{title}</h1>
-        <button className="close" onClick={onClose} aria-label="Close">×</button>
-      </div>
-
-      {/* Back sits with the trail it acts on, not in the header where it reads
-          as "close". At the root there is nothing to go back to. */}
+    <div className="place-view">
+      {/* Back sits with the trail it acts on. The dock head above says where you
+          are and holds the only other back there is, which leaves a pushed view
+          rather than climbing the tree. At the root there is nothing to go back
+          to. */}
       <nav className="crumbs" aria-label="Place trail">
         {parent && (
           <button

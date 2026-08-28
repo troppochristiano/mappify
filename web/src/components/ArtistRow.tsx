@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Artist, type PlaceTrack } from '../lib/api'
+import { Thumb } from './Thumb'
 
 /**
  * One artist in a results list.
@@ -70,15 +71,7 @@ export function ArtistRow({
       >
         <span className="arow-chevron" aria-hidden="true">›</span>
 
-        {/* Decoration, not information — the name beside it already says who
-            this is, so it carries no alt text for a screen reader to repeat.
-            `lazy` matters: a place can list 200 of these, and only the handful
-            actually scrolled to should ever hit the network. */}
-        {artist.image_url ? (
-          <img className="arow-art" src={artist.image_url} alt="" loading="lazy" decoding="async" />
-        ) : (
-          <span className="arow-art arow-art-empty" aria-hidden="true" />
-        )}
+        <Thumb src={artist.image_url} />
 
         <span className="arow-text">
           <span className="arow-name">

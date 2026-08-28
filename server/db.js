@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { ARTIST_PLACE_NAME } from './sql.js';
 
 export const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 export const DB_PATH = process.env.MAPPIFY_DB ?? path.join(ROOT, 'mappify.db');
@@ -179,6 +180,80 @@ CREATE INDEX IF NOT EXISTS idx_artists_mbid    ON artists(mbid);
 CREATE INDEX IF NOT EXISTS idx_ta_artist       ON track_artists(artist_id);
 CREATE INDEX IF NOT EXISTS idx_ts_source       ON track_sources(source_id);
 
+-- A friend is a file somebody sent you: not an account, not a connection, and
+-- not verified in any way. Their library lives in your database because every
+-- read on this server goes through currentDb() — a second file would be
+-- unreachable from a handler, and a shared one would reintroduce the exact
+-- "forgot the WHERE user_id" hazard that one-database-per-user exists to make
+-- impossible.
+--
+-- Kept rigorously apart from artists/tracks/places. Nothing here is ever mixed
+-- into your own library or into the search index: it would put rows in your
+-- results that you cannot open, and let somebody else's file move dots on your
+-- map. See server/share.js.
+CREATE TABLE IF NOT EXISTS friends (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- Re-importing the same person replaces them rather than duplicating them.
+  spotify_id       TEXT NOT NULL UNIQUE,
+  display_name     TEXT NOT NULL,
+  avatar_mime      TEXT,
+  -- The bytes themselves; base64 is how they travel, not how they are kept.
+  avatar_blob      BLOB,
+  format           INTEGER NOT NULL,
+  exported_at      TEXT,
+  imported_at      TEXT NOT NULL,
+  tracks           INTEGER NOT NULL DEFAULT 0,
+  artists          INTEGER NOT NULL DEFAULT 0,
+  places           INTEGER NOT NULL DEFAULT 0,
+  unplaced_tracks  INTEGER,
+  -- Rows validation dropped, kept so the import can say so rather than quietly
+  -- reporting a library smaller than the one that was sent.
+  skipped_rows     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Deliberately no REFERENCES places(qid), and lat/lon are columns rather than a
+-- join. A friend is from cities you have never heard of, and those are the
+-- interesting ones — reading coordinates from your own places table is how a
+-- friend's globe silently collapses to null island.
+--
+-- WITHOUT ROWID throughout: every comparison query is either "all rows for
+-- friend N" or "does friend N have X", so the composite key is the access path
+-- and the row may as well *be* the index.
+CREATE TABLE IF NOT EXISTS friend_places (
+  friend_id    INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  qid          TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  country_iso  TEXT,
+  lat          REAL,
+  lon          REAL,
+  tracks       INTEGER NOT NULL,
+  artists      INTEGER NOT NULL,
+  PRIMARY KEY (friend_id, qid)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS friend_artists (
+  friend_id   INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  spotify_id  TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  tracks      INTEGER NOT NULL,
+  place_qid   TEXT,
+  image_url   TEXT,
+  PRIMARY KEY (friend_id, spotify_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS friend_tracks (
+  friend_id   INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  spotify_id  TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  artist_id   TEXT,
+  PRIMARY KEY (friend_id, spotify_id)
+) WITHOUT ROWID;
+
+-- The reverse direction the primary keys cannot serve: "which of my friends has
+-- this artist", which the artist panel wants the moment this ships.
+CREATE INDEX IF NOT EXISTS idx_fa_artist ON friend_artists(spotify_id);
+CREATE INDEX IF NOT EXISTS idx_ft_artist ON friend_tracks(friend_id, artist_id);
+
 `;
 
 // Artist-first search: results are artists, so the index is over artists.
@@ -189,9 +264,15 @@ CREATE INDEX IF NOT EXISTS idx_ts_source       ON track_sources(source_id);
 // signing in on a runtime without FTS5 failed at the point of creating the user's
 // file. Search falls back to LIKE, which is slower and perfectly usable at the
 // scale of one person's library.
+//
+// `place` rather than `city`: the column holds the name of the place the artist
+// actually resolves to, which is not the same string as the city MusicBrainz
+// reported. An artist you have pinned to Detroit was findable only by the
+// birthplace you corrected them away from for as long as this indexed the raw
+// value — the index has to answer the question the map answers.
 const SEARCH_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS artist_search USING fts5(
-  spotify_id UNINDEXED, name, city, country, tokenize = 'unicode61'
+  spotify_id UNINDEXED, name, place, country, tokenize = 'unicode61'
 );
 `;
 
@@ -205,6 +286,10 @@ let ftsAvailable;
  * this runs the statement rather than only answering from the cache.
  */
 export function hasFts(db) {
+  // An escape hatch, because otherwise the LIKE path is unreachable on a
+  // runtime that has FTS5 — and that path is what every Node 22 install uses.
+  // Untested code that only strangers run is how it rots.
+  if (process.env.MAPPIFY_NO_FTS === '1') return false;
   if (ftsAvailable === undefined) {
     // Probed against a throwaway table in `temp`, not by trying to create the
     // real one: `CREATE VIRTUAL TABLE IF NOT EXISTS` short-circuits when the
@@ -294,14 +379,21 @@ export function openDb(file = DB_PATH) {
   // module. Unguarded, this threw inside openDb and took every route with it —
   // the library would not even load, let alone search. Nothing to migrate on
   // such a runtime anyway: it cannot have written the old shape either.
-  let ftsHasGenres = 0;
+  //
+  // Two column-set changes now: `genres`, dropped with the feature, and `city`,
+  // which became `place` when the index started reading through to the resolved
+  // place instead of the raw MusicBrainz string. Either one means recreate.
+  let ftsStale = 0;
   try {
-    ftsHasGenres = db
-      .prepare(`SELECT count(*) n FROM pragma_table_info('artist_search') WHERE name = 'genres'`)
+    ftsStale = db
+      .prepare(
+        `SELECT count(*) n FROM pragma_table_info('artist_search')
+          WHERE name IN ('genres', 'city')`
+      )
       .get().n;
-    if (ftsHasGenres) db.exec('DROP TABLE artist_search');
+    if (ftsStale) db.exec('DROP TABLE artist_search');
   } catch {
-    ftsHasGenres = 0;
+    ftsStale = 0;
   }
 
   db.exec(SCHEMA);
@@ -327,7 +419,7 @@ export function openDb(file = DB_PATH) {
   // without FTS5 simply gets no index and searches with LIKE instead.
   const fts = hasFts(db);
 
-  if (fts && ftsHasGenres) reindexSearch(db);
+  if (fts && ftsStale) reindexSearch(db);
   return db;
 }
 
@@ -436,8 +528,10 @@ export function openControlDb() {
     -- Instance settings that would otherwise mean editing a file. The Spotify
     -- client id is the only one so far, and it is here because "open .env in a
     -- text editor" is where someone running this on their own laptop gives up.
-    -- The environment still wins where it is set, so a server deployment keeps
-    -- configuring it the usual way.
+    -- The environment wins on a hosted instance, so a server deployment keeps
+    -- configuring it the usual way; on loopback a value entered on the setup
+    -- screen wins instead, being the more recent decision of the one person who
+    -- can reach it. See clientId() in server/auth.js.
     CREATE TABLE IF NOT EXISTS settings (
       key    TEXT PRIMARY KEY,
       value  TEXT
@@ -447,17 +541,41 @@ export function openControlDb() {
   return db;
 }
 
+/**
+ * What one artist looks like to the index.
+ *
+ * The resolved place first — the same COALESCE the map reads, so the index and
+ * the dots agree about a pinned artist — with the raw city kept as the tail, so
+ * somebody who has no resolved place yet is still findable by the city shown on
+ * their row rather than by nothing at all.
+ */
+const SEARCH_ROW = `
+  SELECT a.spotify_id, a.name,
+         COALESCE(${ARTIST_PLACE_NAME}, a.mb_city, a.wd_city, ''),
+         COALESCE(a.mb_country, a.wd_country, '')
+    FROM artists a`;
+
 /** Rebuilds the FTS index from current rows. Cheap enough to just redo wholesale. */
 export function reindexSearch(db) {
   if (!hasFts(db)) return;
   db.exec('DELETE FROM artist_search');
-  db.exec(`
-    INSERT INTO artist_search (spotify_id, name, city, country)
-    SELECT a.spotify_id, a.name,
-           COALESCE(a.mb_city, a.wd_city, ''),
-           COALESCE(a.mb_country, a.wd_country, '')
-    FROM artists a
-  `);
+  db.exec(`INSERT INTO artist_search (spotify_id, name, place, country) ${SEARCH_ROW}`);
+}
+
+/**
+ * The same, for one artist.
+ *
+ * Pinning an origin changes where exactly one person is from, and rebuilding
+ * the whole index for that is work proportional to the library rather than to
+ * the edit. Without it the index simply stays wrong until the next import.
+ */
+export function reindexArtist(db, spotifyId) {
+  if (!hasFts(db)) return;
+  db.prepare('DELETE FROM artist_search WHERE spotify_id = ?').run(spotifyId);
+  db.prepare(
+    `INSERT INTO artist_search (spotify_id, name, place, country)
+     ${SEARCH_ROW} WHERE a.spotify_id = ?`
+  ).run(spotifyId);
 }
 
 if (import.meta.filename === process.argv[1]) {

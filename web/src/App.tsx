@@ -8,11 +8,11 @@ import { FirstRun } from './components/FirstRun'
 import { useHeartbeat } from './lib/usePresence'
 import { useImportStatus } from './lib/useImportStatus'
 
-function Header({ floating }: { floating: boolean }) {
+function Header() {
   const { data } = useQuery({ queryKey: ['stats'], queryFn: api.stats })
 
   return (
-    <header className={floating ? 'app floating' : 'app'}>
+    <header className="app">
       <h1>Mappify</h1>
       <div className="meta">
         <span><b>{data?.tracks ?? '—'}</b> tracks</span>
@@ -52,7 +52,8 @@ export default function App() {
 
   return (
     <div className={isGlobe ? 'wrap wrap--bleed' : 'wrap'}>
-      <Header floating={isGlobe} />
+      {/* The globe is the whole screen; its own counts live in the dock. */}
+      {!isGlobe && <Header />}
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/artist/:id" element={<Artist />} />

@@ -2,8 +2,9 @@
 // Read-only for now; sync and export endpoints arrive with Phases 2 and 6.
 
 import './env.js';
+import { isLoopback } from './env.js';
 import http from 'node:http';
-import { openUserDb, hasFts } from './db.js';
+import { openUserDb, hasFts, reindexArtist } from './db.js';
 import { runAsUser, currentDb, currentUserId } from './context.js';
 import {
   authStatus,
@@ -14,13 +15,34 @@ import {
   publicUrl,
   hasClientId,
   setClientId,
+  clientId,
+  clientIdSource,
   REDIRECT_URI,
 } from './auth.js';
 import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
 import { serveStatic, hasBuiltApp } from './static.js';
+import { CITY, COUNTRY, ARTIST_PLACE, ARTIST_IMAGE, PLACE_SUBTREE } from './sql.js';
+import { parseFilters, filterSql, filterTargets } from './filters.js';
+import { artistMatch, friendArtistMatch, tokenise } from './search.js';
+import {
+  buildExport,
+  encodeExport,
+  exportFilename,
+  decodeExport,
+  saveFriend,
+  listFriends,
+  getFriend,
+  friendAvatar,
+  friendPoints,
+  friendLibrary,
+  myLibrary,
+  deleteFriend,
+  BadShareFile,
+} from './share.js';
+import { compareLibraries } from './compare.js';
 import { runImport, status as importStatus, cancel as cancelImport, anyRunning } from './jobs.js';
 import { beat, bye, armAutoQuit, graceMs } from './presence.js';
-import { createPlaylist } from './sources/spotify.js';
+import { createPlaylist, me, fetchAvatarBytes } from './sources/spotify.js';
 import { indexInfo } from './mbindex.js';
 
 const PORT = Number(process.env.MAPPIFY_PORT ?? 6942);
@@ -31,8 +53,9 @@ const WEB_ORIGIN = process.env.MAPPIFY_WEB ?? publicUrl();
 // which is a decision to expose the thing and should have to be made on purpose.
 const HOST = process.env.MAPPIFY_HOST ?? '127.0.0.1';
 // Only reachable from this machine, which is what makes the first-run setup
-// screen safe to expose without anyone being signed in yet.
-const LOOPBACK = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
+// screen safe to expose without anyone being signed in yet. The rule lives in
+// env.js because auth.js decides the same question about .env.
+const LOOPBACK = isLoopback();
 
 // Requests being served right now. The idle shutdown counts these as work, so it
 // can never land in the middle of one — /api/playlist-create writes to somebody's
@@ -49,86 +72,12 @@ const one = (sql, ...params) => currentDb().prepare(sql).get(...params);
 
 // Display values: MusicBrainz first, Wikidata as fallback. Both are kept in the
 // DB; this only decides what the UI shows by default.
-/**
- * A picture for an artist, out of what the library already holds.
- *
- * `artists.image_url` exists but is empty for every row: artist portraits were
- * never fetched, and since February 2026 there is no batch `GET /artists`, so
- * filling it would mean one request per artist. Album covers, on the other hand,
- * arrived with the tracks themselves and cover every artist in the library.
- *
- * So the artist's own portrait wins if it is ever populated, and otherwise this
- * falls back to the cover of their most-recent track — no extra Spotify calls at
- * any point. Ordered by rowid rather than by name so the same artist keeps the
- * same picture between requests instead of flickering between covers.
- *
- * The size token in a Spotify CDN path is swapped for the 64px variant, which is
- * what a 32px row actually needs even on a 2× display. Every stored cover but
- * one carries the 640px token, and a list can hold 200 rows: left alone that is
- * roughly 8MB of images to draw thumbnails with, against about 400KB. The
- * replace is a no-op on any URL that does not carry the token.
- */
-const ARTIST_IMAGE = `replace(COALESCE(a.image_url, (
-  SELECT t.image_url FROM track_artists ta
-    JOIN tracks t ON t.spotify_id = ta.track_id
-   WHERE ta.artist_id = a.spotify_id AND t.image_url IS NOT NULL
-   ORDER BY t.rowid DESC LIMIT 1)), 'ab67616d0000b273', 'ab67616d00004851')`;
 
-/**
- * Narrow a `track_artists ta` join to one source in the library.
- *
- * Everything the map shows is counted through that join, so restricting it here
- * makes "only my Liked Songs" or "only this playlist" mean the same thing in
- * every view at once — the dots, the counts, the tree and the artist lists.
- *
- * The id is interpolated rather than bound because the call sites all use
- * positional parameters in different orders, and threading one more through
- * each is how the wrong value ends up in the wrong slot. It is coerced to a
- * positive integer first and anything else yields no clause at all, so there is
- * nothing here for a caller to inject.
- */
-function sourceFilter(raw) {
-  const id = Number(raw);
-  if (!raw || !Number.isInteger(id) || id <= 0) return '';
-  return ` AND EXISTS (SELECT 1 FROM track_sources ts
-             WHERE ts.track_id = ta.track_id AND ts.source_id = ${id})`;
-}
-
-const CITY = 'COALESCE(a.mb_city, a.wd_city)';
-const COUNTRY = 'COALESCE(a.mb_country, a.wd_country)';
-
-/**
- * The one definition of where an artist is, as a scalar subquery on `a`.
- *
- * Four routes in, most-trusted first. Your own correction wins outright; then
- * the origin from an artist's Wikipedia infobox, which says where an act is
- * *from* rather than where a person happened to be born; then a MusicBrainz
- * area (the normal path); then a directly-resolved Wikidata place, for the tail
- * MusicBrainz has no area for. Everything reads through this — when only the
- * area route existed, that tail had a city on screen but nothing on the map
- * could join to it, so those artists silently collected in Unknown.
- *
- * merged_into is applied here too: a shell resolves to the city it wraps.
- */
-const ARTIST_PLACE = `COALESCE(
-  (SELECT COALESCE(p0.merged_into, p0.qid) FROM places p0 WHERE p0.qid = a.origin_override_qid),
-  (SELECT COALESCE(pw.merged_into, pw.qid) FROM places pw WHERE pw.qid = a.origin_wiki_qid),
-  (SELECT COALESCE(p.merged_into, p.qid) FROM place_areas pa
-     JOIN places p ON p.qid = pa.qid
-    WHERE pa.mb_area_id = a.mb_begin_area_id),
-  (SELECT COALESCE(p2.merged_into, p2.qid) FROM places p2 WHERE p2.qid = a.place_qid)
-)`;
-
-/** Walks down the surviving place hierarchy — New York City brings its boroughs. */
-const PLACE_SUBTREE = `${ARTIST_PLACE} IN (
-  WITH RECURSIVE sub(qid) AS (
-    SELECT ?
-    UNION
-    SELECT c.qid FROM places c JOIN sub
-      ON COALESCE((SELECT m.merged_into FROM places m WHERE m.qid = c.parent_qid), c.parent_qid) = sub.qid
-     WHERE c.merged_into IS NULL AND c.qid <> sub.qid
-  ) SELECT qid FROM sub
-)`;
+// CITY, COUNTRY, ARTIST_PLACE and PLACE_SUBTREE now live in sql.js, and the
+// library filter that used to be `sourceFilter` here is filters.js — the search
+// index has to answer "where is this artist from" exactly as the API does, and
+// the chips have to mean the same thing in every view, so both definitions are
+// shared rather than restated.
 
 /** Every liked/playlist track whose primary artist is from a place. */
 function placeTracks({ qid, iso }) {
@@ -173,28 +122,15 @@ const routes = {
     const iso = url.searchParams.get('iso');
     const limit = Math.min(Number(url.searchParams.get('limit') ?? 50), 200);
     const offset = Number(url.searchParams.get('offset') ?? 0);
-    const SRC = sourceFilter(url.searchParams.get('source'));
+    const F = filterSql(parseFilters(url));
+    const SRC = F.join;
 
     const where = [];
     const params = [];
     if (q) {
-      const tokens = q.split(/\s+/).map((tok) => tok.replace(/["*%_]/g, '')).filter(Boolean);
-      if (hasFts(currentDb())) {
-        // Prefix-match the last token so typing feels live.
-        where.push('a.spotify_id IN (SELECT spotify_id FROM artist_search WHERE artist_search MATCH ?)');
-        params.push(tokens.map((tok) => `"${tok}"*`).join(' '));
-      } else if (tokens.length) {
-        // No FTS5 in this runtime — Node only gained it in 24. Every token has to
-        // appear somewhere, which is the same "and" the MATCH above does, just
-        // scanned rather than indexed. At one person's library that is fine.
-        for (const tok of tokens) {
-          where.push(
-            `(a.name LIKE ? OR COALESCE(a.mb_city, a.wd_city, '') LIKE ?` +
-              ` OR COALESCE(a.mb_country, a.wd_country, '') LIKE ?)`
-          );
-          params.push(`%${tok}%`, `%${tok}%`, `%${tok}%`);
-        }
-      }
+      const m = artistMatch(q, hasFts(currentDb()));
+      where.push(...m.clauses);
+      params.push(...m.params);
     }
     if (city) {
       where.push(`${CITY} = ?`);
@@ -247,13 +183,16 @@ const routes = {
              (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = a.spotify_id${SRC}) tracks,
              ${ARTIST_IMAGE} image_url
       FROM artists a
-      WHERE ${where.join(' AND ')}
+      WHERE ${where.join(' AND ')}${F.where}
       ORDER BY tracks DESC, a.name COLLATE NOCASE
       LIMIT ? OFFSET ?`;
-    const items = all(sql, ...params, limit, offset);
+    // The chips' own parameters go last, because their clauses are appended
+    // last — that is the whole reason filterSql keeps every `?` in `where`.
+    const items = all(sql, ...params, ...F.params, limit, offset);
     const total = one(
-      `SELECT count(*) n FROM artists a WHERE ${where.join(' AND ')}`,
-      ...params
+      `SELECT count(*) n FROM artists a WHERE ${where.join(' AND ')}${F.where}`,
+      ...params,
+      ...F.params
     ).n;
     return { total, items };
   },
@@ -297,7 +236,8 @@ const routes = {
    * because its only parents are counties.
    */
   '/api/tree': (url) => {
-    const SRC = sourceFilter(url.searchParams.get('source'));
+    const F = filterSql(parseFilters(url));
+    const SRC = F.join;
     const regionName = (iso) => {
       if (!iso) return null;
       try {
@@ -323,8 +263,8 @@ const routes = {
              max(a.mb_country_iso)         artist_iso
       FROM artists a
       JOIN track_artists ta ON ta.artist_id = a.spotify_id AND ta.position = 0${SRC}
-      WHERE ${ARTIST_PLACE} IS NOT NULL
-      GROUP BY ${ARTIST_PLACE}`);
+      WHERE ${ARTIST_PLACE} IS NOT NULL${F.where}
+      GROUP BY ${ARTIST_PLACE}`, ...F.params);
     for (const r of resolved) {
       const node = places.get(r.qid);
       if (!node) continue;
@@ -342,8 +282,8 @@ const routes = {
              count(DISTINCT a.spotify_id)   artists
       FROM artists a
       JOIN track_artists ta ON ta.artist_id = a.spotify_id AND ta.position = 0${SRC}
-      WHERE ${ARTIST_PLACE} IS NULL
-      GROUP BY city, iso`);
+      WHERE ${ARTIST_PLACE} IS NULL${F.where}
+      GROUP BY city, iso`, ...F.params);
 
     // Assemble: every place hangs off its nearest surviving settlement ancestor.
     //
@@ -492,7 +432,8 @@ const routes = {
 
   /** Points for the map: one per resolved place that has coordinates. */
   '/api/map': (url) => {
-    const SRC = sourceFilter(url.searchParams.get('source'));
+    const F = filterSql(parseFilters(url));
+    const SRC = F.join;
     // Grouped by the surviving place, so Milan is one dot rather than two.
     const points = all(`
       SELECT s.qid, s.name, s.lat, s.lon, s.country_iso,
@@ -501,15 +442,18 @@ const routes = {
       FROM artists a
       JOIN places s ON s.qid = ${ARTIST_PLACE}
       JOIN track_artists ta ON ta.artist_id = a.spotify_id AND ta.position = 0${SRC}
-      WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL
+      WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL${F.where}
       GROUP BY s.qid
-      ORDER BY tracks DESC`);
+      ORDER BY tracks DESC`, ...F.params);
+    // A filtered globe reports the tail it is actually hiding, so the hint and
+    // the dots are counting the same library.
     const missing = one(`
       SELECT count(DISTINCT ta.track_id) tracks
       FROM artists a
       JOIN track_artists ta ON ta.artist_id = a.spotify_id AND ta.position = 0${SRC}
-      WHERE ${ARTIST_PLACE} IS NULL
-         OR ${ARTIST_PLACE} NOT IN (SELECT qid FROM places WHERE lat IS NOT NULL)`);
+      WHERE (${ARTIST_PLACE} IS NULL
+         OR ${ARTIST_PLACE} NOT IN (SELECT qid FROM places WHERE lat IS NOT NULL))${F.where}`,
+      ...F.params);
     return { points, unmappedTracks: missing.tracks };
   },
 
@@ -574,6 +518,13 @@ const routes = {
     // Before a client ID exists there is no sign-in to offer, so the first
     // screen has to be the one that asks for it.
     needsClientId: !hasClientId(),
+    // Shown in full so it can be compared against the dashboard: a client ID is
+    // public by design under PKCE, and "is this the app I think it is" is the
+    // question you need answered when sign-in fails.
+    clientId: hasClientId() ? clientId() : null,
+    // 'env' means this instance is configured by .env and the panel must not
+    // offer a control that would be refused.
+    clientIdSource: clientIdSource(),
     redirectUri: REDIRECT_URI,
     // Running on your own machine, where the person signing in is the person who
     // registered the app. The five-account warning is meaningless there, and
@@ -584,12 +535,17 @@ const routes = {
     hasLibrary: currentUserId() ? one('SELECT count(*) n FROM tracks').n > 0 : false,
   }),
 
-  // First-run only, and only from the machine it is running on. Reachable from
-  // outside, this would let a stranger point somebody else's install at their
-  // own Spotify application.
+  // Only from the machine it is running on. Reachable from outside, this would
+  // let a stranger point somebody else's install at their own Spotify
+  // application — which is the whole reason a hosted instance is sent to the
+  // environment instead.
+  //
+  // `replace` distinguishes the first-run screen from a deliberate change, so
+  // the former cannot silently overwrite a working app from a stale tab.
   '/api/config/client-id': (url, body) => {
     if (!LOOPBACK) throw new Error('Set SPOTIFY_CLIENT_ID in the environment on a hosted instance.');
-    return { clientId: setClientId(body?.clientId), redirectUri: REDIRECT_URI };
+    const id = setClientId(body?.clientId, { replace: Boolean(body?.replace) });
+    return { clientId: id, redirectUri: REDIRECT_URI };
   },
 
   // Step one of the sign-in: hand the browser somewhere to go. The client
@@ -714,6 +670,194 @@ const routes = {
   },
 
   /**
+   * One query, three kinds of answer: artists, places and playlists.
+   *
+   * What the search panel is built on. Everything it returns is something you
+   * can turn into a filter chip, which is why places are here as places rather
+   * than as the artists who happen to live in them — "not Italy" is a thing you
+   * mean about a country, not about a list of people.
+   *
+   * Deliberately *not* narrowed by the chips already applied. You are looking
+   * for the next thing to include or rule out, and hiding candidates because
+   * they fall outside the current filter is how a filter becomes a cage.
+   *
+   * No track search: there is no index for track names, and building one over
+   * the largest table in the database to answer a question nobody has asked yet
+   * is not free. If it is ever wanted, it belongs next to `artist_search`.
+   */
+  '/api/search': (url) => {
+    const q = (url.searchParams.get('q') ?? '').trim();
+    const limit = Math.min(Number(url.searchParams.get('limit') ?? 8), 20);
+    const { scope, friend } = searchScope(url);
+
+    // Sources, by name. LIKE rather than FTS: a library holds hundreds of
+    // playlists, not hundreds of thousands, and `imported > 0` is the same rule
+    // the old dropdown used — an un-owned playlist Spotify will not enumerate
+    // exists here as a name with nothing behind it, and offering one hands you
+    // a chip that silently empties the globe.
+    const playlists = (pattern, n) =>
+      all(
+        `SELECT s.id, s.kind, s.name, s.image_url,
+                (SELECT count(*) FROM track_sources ts WHERE ts.source_id = s.id) imported
+           FROM sources s
+          WHERE ${pattern ? 's.name LIKE ? AND ' : ''}
+                (SELECT count(*) FROM track_sources ts WHERE ts.source_id = s.id) > 0
+          ORDER BY (s.kind = 'liked') DESC, imported DESC, s.name COLLATE NOCASE
+          LIMIT ?`,
+        ...(pattern ? [pattern] : []),
+        n
+      );
+
+    /**
+     * Your own library, searched.
+     *
+     * A function rather than the straight-line code it used to be, because the
+     * 'both' scope needs the same answer and restating this query is exactly how
+     * the two would drift apart.
+     */
+    const mineResults = () => {
+      const m = artistMatch(q, hasFts(currentDb()));
+      const artists = m.clauses.length
+        ? all(
+            `SELECT a.spotify_id, a.name,
+                    COALESCE((SELECT p3.name FROM places p3 WHERE p3.qid = a.origin_override_qid),
+                             (SELECT p4.name FROM places p4 WHERE p4.qid = a.origin_wiki_qid),
+                             ${CITY}) city,
+                    ${ARTIST_PLACE} place_qid,
+                    (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = a.spotify_id) tracks,
+                    ${ARTIST_IMAGE} image_url
+               FROM artists a
+              WHERE ${m.clauses.join(' AND ')}
+              ORDER BY tracks DESC, a.name COLLATE NOCASE
+              LIMIT ?`,
+            ...m.params,
+            limit
+          )
+        : [];
+
+      // Every token has to appear in the name, so "new york" still finds New York
+      // City. Only places the globe can actually draw: one without coordinates
+      // cannot be a dot, so it cannot be a filter either.
+      //
+      // Counted over the subtree, not the place itself, because that is what
+      // picking it would actually show — Greater London holds no artists of its
+      // own and eighty-odd through the boroughs under it, and a row reading "0
+      // artists" for a filter that yields eighty is a lie about what the click
+      // does. Two queries deep so the walk runs for the handful of rows that
+      // survive rather than for every place whose name matches.
+      const tokens = tokenise(q);
+      const named = tokens.length
+        ? all(
+            `SELECT p.qid, p.name, p.country_iso,
+                    (SELECT count(*) FROM artists a WHERE ${ARTIST_PLACE} = p.qid) direct
+               FROM places p
+              WHERE p.lat IS NOT NULL AND p.merged_into IS NULL
+                AND ${tokens.map(() => 'p.name LIKE ?').join(' AND ')}
+              ORDER BY direct DESC, length(p.name), p.name COLLATE NOCASE
+              LIMIT ?`,
+            ...tokens.map((tok) => `%${tok}%`),
+            limit * 2
+          )
+        : [];
+      const places = named
+        .map((p) => {
+          const n = one(
+            `SELECT count(DISTINCT a.spotify_id) artists,
+                    count(DISTINCT ta.track_id)  tracks
+               FROM artists a
+               JOIN track_artists ta ON ta.artist_id = a.spotify_id AND ta.position = 0
+              WHERE ${PLACE_SUBTREE}`,
+            p.qid
+          );
+          return { qid: p.qid, name: p.name, country_iso: p.country_iso, ...n };
+        })
+        // A place nothing in the library comes from is a chip that empties the
+        // globe. It is still a real place; it is just not one of yours.
+        .filter((p) => p.artists > 0)
+        .sort((a, b) => b.artists - a.artists || a.name.length - b.name.length)
+        .slice(0, limit);
+
+      // Labelled even though this is the only source in the default scope: if
+      // only friend rows carried an owner, yours would be identified by the
+      // absence of a field, which is not something a reader should have to know.
+      return { artists: artists.map((r) => ({ ...r, owner: 'mine' })),
+               places: places.map((r) => ({ ...r, owner: 'mine' })) };
+    };
+
+    // Whose playlists are searchable: only ever yours.
+    //
+    // Not an oversight and not a gap to be filled later — a share file carries
+    // aggregates, and playlists are deliberately not among them. There is no
+    // friend-side data to match, so rather than returning an empty list that
+    // looks like "no results for that name", the scope is reported and the panel
+    // says why. See `scopeNotes` below.
+    const mineOnlyPlaylists = scope === 'theirs' ? [] : null;
+
+    // Nothing typed yet: the panel's resting state is your library, which is
+    // what the source dropdown used to be for.
+    if (!q) {
+      return {
+        artists: [],
+        places: [],
+        playlists: mineOnlyPlaylists ?? playlists(null, 20),
+        ...scopeNotes(scope, friend),
+      };
+    }
+
+    if (scope !== 'mine') {
+      const theirs = friendResults(friend, q, limit);
+      if (scope === 'theirs') {
+        return { ...theirs, playlists: [], ...scopeNotes(scope, friend) };
+      }
+      // 'both': yours first within each kind, because it is the library you can
+      // actually act on — a friend row can be looked at and flown to, but it
+      // cannot become a filter chip on your own globe.
+      const mine = mineResults();
+      return {
+        artists: [...mine.artists, ...theirs.artists].slice(0, limit * 2),
+        places: [...mine.places, ...theirs.places].slice(0, limit * 2),
+        playlists: playlists(`%${q}%`, limit),
+        ...scopeNotes(scope, friend),
+      };
+    }
+
+    return {
+      ...mineResults(),
+      playlists: playlists(`%${q}%`, limit),
+      ...scopeNotes(scope, friend),
+    };
+  },
+
+  /**
+   * The names behind a set of chips.
+   *
+   * Chips travel in the URL as bare ids, so that a shared link cannot carry a
+   * playlist name that has since been renamed. This is how the panel turns them
+   * back into something readable. An id nothing matches is simply absent, and
+   * the client shows the raw id — a deleted playlist should look odd, not crash.
+   */
+  '/api/filter-labels': (url) => {
+    const f = parseFilters(url);
+    const labels = {};
+    const lookup = (targets, sql, key) => {
+      for (const id of targets) {
+        const row = one(sql, id);
+        if (row?.name) labels[`${key}:${id}`] = row.name;
+      }
+    };
+    for (const mode of ['include', 'exclude']) {
+      lookup(f[mode].places, 'SELECT name FROM places WHERE qid = ?', 'place');
+      lookup(f[mode].sources, 'SELECT name FROM sources WHERE id = ?', 'playlist');
+      lookup(f[mode].artists, 'SELECT name FROM artists WHERE spotify_id = ?', 'artist');
+    }
+    // `limits` rides along because this is the one call the panel makes whenever
+    // there are chips at all, and it is where a truncated filter can be told
+    // about. Without it the caps in filters.js would drop chips with the URL
+    // still listing them and nothing on screen to say so.
+    return { labels, targets: filterTargets(f), limits: f.limits };
+  },
+
+  /**
    * Pin an artist to a place by hand, or clear the pin.
    *
    * Writes nothing to Spotify and nothing to MusicBrainz — it only overrides
@@ -726,7 +870,13 @@ const routes = {
     if (qid && !one('SELECT 1 ok FROM places WHERE qid = ?', qid)) {
       return { error: 'no such place' };
     }
-    db.prepare('UPDATE artists SET origin_override_qid = ? WHERE spotify_id = ?').run(qid, id);
+    // currentDb(), not a module-level `db` — there is no such binding any more,
+    // which is why every pin used to 500 on the way out.
+    currentDb().prepare('UPDATE artists SET origin_override_qid = ? WHERE spotify_id = ?').run(qid, id);
+    // The search index is built from the resolved place, so a pin that does not
+    // reach it leaves the artist findable by the birthplace you just corrected
+    // away from. One row, rather than rebuilding the whole index for a click.
+    reindexArtist(currentDb(), id);
     return { ok: true, spotifyId: id, placeQid: qid };
   },
 
@@ -743,16 +893,345 @@ const routes = {
       ORDER BY (place = 'Unknown'), tracks DESC, place`);
     return { places: rows };
   },
+
+  // --- sharing -------------------------------------------------------------
+  //
+  // Flat hyphenated names, like every route above: the table is keyed on the
+  // exact pathname, so `/api/friends/12` cannot exist and a slashed name would
+  // advertise a hierarchy the router does not have.
+  //
+  // None of these are in PUBLIC, and /api/export is the reason that matters —
+  // it emits the whole library in one GET, and a hosted instance binds
+  // 0.0.0.0. Default-private is the only thing standing in front of it.
+
+  '/api/export': async () => {
+    const userId = currentUserId();
+    // The display name is asked of Spotify rather than of the library, because
+    // the library does not hold one — and the avatar comes back null on any
+    // failure rather than costing somebody their export.
+    let displayName = userId;
+    try {
+      displayName = (await me())?.display_name || userId;
+    } catch {
+      // Offline, or the token has expired. The file is still worth writing.
+    }
+    const avatar = await fetchAvatarBytes();
+
+    const payload = buildExport({ spotifyId: userId, displayName, avatar });
+    const bytes = encodeExport(payload);
+    const ascii = exportFilename(displayName);
+
+    return {
+      $raw: {
+        headers: {
+          // Not application/gzip, and above all not Content-Encoding: gzip —
+          // that would have the browser transparently inflate the file and save
+          // a .mappify full of plain JSON, which then fails its own gzip check
+          // on import while looking perfectly fine on disk.
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition':
+            `attachment; filename="${ascii}"; ` +
+            `filename*=UTF-8''${encodeURIComponent(ascii)}`,
+          'Content-Length': bytes.length,
+          'Cache-Control': 'no-store',
+        },
+        body: bytes,
+      },
+    };
+  },
+
+  '/api/friends': () => ({ friends: listFriends() }),
+
+  '/api/friend': (url) => {
+    const id = friendId(url);
+    const friend = getFriend(id);
+    if (!friend) throw badRequest('no such friend');
+    return { friend, points: friendPoints(id) };
+  },
+
+  /** The body is the file itself — see BINARY below. */
+  '/api/friend-import': (url, body) => {
+    if (!Buffer.isBuffer(body) || !body.length) throw new BadShareFile('No file was sent.');
+    // Importing your own export is deliberately allowed: it is how you check
+    // that the file you are about to send says what you think it says, and it is
+    // the one comparison whose answer is known in advance.
+    const decoded = decodeExport(body);
+    const friend = saveFriend(decoded);
+    return { ok: true, friend, skipped: decoded.dropped };
+  },
+
+  '/api/friend-delete': (url, body) => {
+    const id = Number(body?.id);
+    if (!Number.isInteger(id) || id <= 0) throw badRequest('which friend?');
+    deleteFriend(id);
+    return { ok: true };
+  },
+
+  '/api/friend-avatar': (url) => {
+    const row = friendAvatar(friendId(url));
+    if (!row?.bytes) throw badRequest('no avatar');
+    return {
+      $raw: {
+        headers: {
+          // The sniffed type from import, never the one the file claimed. The
+          // two hardening headers are here because this is the one route that
+          // serves bytes a stranger chose, from this origin.
+          'Content-Type': row.mime,
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+          'Cache-Control': 'private, max-age=86400',
+        },
+        body: Buffer.from(row.bytes),
+      },
+    };
+  },
+
+  '/api/compare': (url) => {
+    const id = friendId(url);
+    const friend = getFriend(id);
+    if (!friend) throw badRequest('no such friend');
+    return { friend, report: compareLibraries(myLibrary(), friendLibrary(id)) };
+  },
+
+  /**
+   * What one collaboration arc on the globe is made of.
+   *
+   * The arcs come from `/api/links`, which only ever says *that* two places
+   * share tracks and never which — so this is the other half of a line you can
+   * see: the tracks crediting artists from both ends, and which artist is from
+   * which end.
+   *
+   * The pair is unordered, exactly as it is on the globe. `/api/links` emits
+   * each pair once with `b.qid > a.qid`, but a click has no reason to know that,
+   * so this normalises rather than demanding a convention the caller cannot see.
+   *
+   * Deliberately mirrors the collab query in `/api/links`: `position` is ignored
+   * — the whole point is the artists past the first, since a track with only a
+   * lead artist connects nothing — and `ARTIST_PLACE` resolves both ends, so an
+   * artist you have pinned by hand appears on the side you put them.
+   */
+  '/api/collab': (url) => {
+    const a = url.searchParams.get('a');
+    const b = url.searchParams.get('b');
+    if (!/^Q\d+$/.test(a ?? '') || !/^Q\d+$/.test(b ?? '')) throw badRequest('two place qids');
+    if (a === b) throw badRequest('a place does not collaborate with itself');
+
+    const place = (qid) => one('SELECT qid, name, country_iso FROM places WHERE qid = ?', qid);
+    const pa = place(a);
+    const pb = place(b);
+    if (!pa || !pb) throw badRequest('no such place');
+
+    // Every credited artist on every track that has someone from both ends. The
+    // INTERSECT is what "both" means; doing it in SQL rather than in JS keeps
+    // the row set to the tracks that actually qualify.
+    const rows = all(
+      `WITH ap AS (
+         SELECT a.spotify_id id, a.name, ${ARTIST_PLACE} qid FROM artists a
+       ),
+       shared AS (
+         SELECT ta.track_id t FROM track_artists ta JOIN ap ON ap.id = ta.artist_id
+          WHERE ap.qid = ?
+         INTERSECT
+         SELECT ta.track_id FROM track_artists ta JOIN ap ON ap.id = ta.artist_id
+          WHERE ap.qid = ?
+       )
+       SELECT t.spotify_id, t.name, t.album, t.uri, t.url, t.image_url,
+              ap.id artist_id, ap.name artist, ap.qid,
+              ta.position
+         FROM shared s
+         JOIN tracks t ON t.spotify_id = s.t
+         JOIN track_artists ta ON ta.track_id = s.t
+         JOIN ap ON ap.id = ta.artist_id AND ap.qid IN (?, ?)
+        ORDER BY t.name COLLATE NOCASE, ta.position`,
+      a,
+      b,
+      a,
+      b
+    );
+
+    // Grouped here rather than with group_concat: the artists carry ids the
+    // panel turns into links, and packing those into a string only to split it
+    // again is how a name containing a comma becomes two artists.
+    const byTrack = new Map();
+    const artistIds = new Set();
+    for (const r of rows) {
+      let t = byTrack.get(r.spotify_id);
+      if (!t) {
+        t = {
+          spotify_id: r.spotify_id,
+          name: r.name,
+          album: r.album,
+          uri: r.uri,
+          url: r.url,
+          image_url: r.image_url,
+          artists: [],
+        };
+        byTrack.set(r.spotify_id, t);
+      }
+      t.artists.push({ spotify_id: r.artist_id, name: r.artist, qid: r.qid });
+      artistIds.add(r.artist_id);
+    }
+
+    return {
+      a: pa,
+      b: pb,
+      tracks: [...byTrack.values()],
+      artistCount: artistIds.size,
+    };
+  },
 };
 
-function readBody(req) {
-  return new Promise((resolve) => {
+/**
+ * Which libraries a search covers.
+ *
+ * Defaults to 'mine', so every existing caller and every old link behaves as it
+ * did. A friend scope naming a friend who is not there falls back to your own
+ * library rather than throwing: that is what a stale link looks like after a
+ * friend has been removed, and it is not worth an error page.
+ */
+function searchScope(url) {
+  const raw = url.searchParams.get('scope');
+  const n = Number(url.searchParams.get('friend'));
+  const id = Number.isInteger(n) && n > 0 ? n : null;
+  const scope = raw === 'theirs' || raw === 'both' ? raw : 'mine';
+  if (scope === 'mine') return { scope: 'mine', friend: null };
+  if (id == null || !getFriend(id)) return { scope: 'mine', friend: null };
+  return { scope, friend: id };
+}
+
+/**
+ * What the panel has to say out loud about the scope it is in.
+ *
+ * Only ever about what is absent *by design*, never about what merely found
+ * nothing. An empty playlist list under a friend scope would otherwise read as
+ * "no playlist of theirs matches", when the truth is that a shared library
+ * carries no playlists at all — the export is aggregates, deliberately. Saying
+ * which of the two it is, is the whole difference between a control that means
+ * two things and one that admits which thing it means.
+ */
+function scopeNotes(scope, friend) {
+  if (scope === 'mine') return { scope: 'mine', friend: null };
+  return {
+    scope,
+    friend,
+    unavailable: {
+      playlists: 'A shared library carries artists, tracks and places — not playlists.',
+    },
+  };
+}
+
+/**
+ * An imported library, searched.
+ *
+ * Rows carry `owner: 'theirs'`, and yours carry `owner: 'mine'`, so a merged
+ * list says where each row came from rather than leaving it to be inferred.
+ *
+ * The place counts here are the friend's own totals for that place and nothing
+ * beneath it. Their places arrive as a flat list with no parent chain, so unlike
+ * the query over your own library there is no subtree to roll up — which is a
+ * real difference in what the number means, and the reason the panel labels
+ * these rows rather than mixing them in silently.
+ */
+function friendResults(friendId, q, limit) {
+  if (friendId == null) return { artists: [], places: [] };
+
+  const m = friendArtistMatch(q);
+  const artists = m.clauses.length
+    ? all(
+        `SELECT fa.spotify_id, fa.name,
+                (SELECT fp.name FROM friend_places fp
+                  WHERE fp.friend_id = fa.friend_id AND fp.qid = fa.place_qid) city,
+                fa.place_qid, fa.tracks, fa.image_url
+           FROM friend_artists fa
+          WHERE fa.friend_id = ? AND ${m.clauses.join(' AND ')}
+          ORDER BY fa.tracks DESC, fa.name COLLATE NOCASE
+          LIMIT ?`,
+        friendId,
+        ...m.params,
+        limit
+      )
+    : [];
+
+  const tokens = tokenise(q);
+  const places = tokens.length
+    ? all(
+        `SELECT qid, name, country_iso, tracks, artists
+           FROM friend_places
+          WHERE friend_id = ? AND ${tokens.map(() => 'name LIKE ?').join(' AND ')}
+          ORDER BY tracks DESC, length(name), name COLLATE NOCASE
+          LIMIT ?`,
+        friendId,
+        ...tokens.map((tok) => `%${tok}%`),
+        limit
+      )
+    : [];
+
+  const theirs = (row) => ({ ...row, owner: 'theirs' });
+  return { artists: artists.map(theirs), places: places.map(theirs) };
+}
+
+/**
+ * A caller's mistake, told apart from a fault in here.
+ *
+ * Without this every malformed id came back as a 500, which reads in the console
+ * as "the server broke" when what happened is that it was asked for friend
+ * number `abc`.
+ */
+function badRequest(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+/** The `?id=`/`?friend=` a share route was called with, or a refusal. */
+function friendId(url) {
+  const raw = url.searchParams.get('id') ?? url.searchParams.get('friend');
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) throw badRequest('which friend?');
+  return id;
+}
+
+/** No JSON route here needs a fraction of this. */
+const MAX_JSON_BODY = 1 << 20;
+
+/** A 30,000-track library exports to about 2MB, so this is roomy on purpose. */
+const MAX_UPLOAD = 16 << 20;
+
+/** Routes whose body is a file rather than an object. */
+const BINARY = new Set(['/api/friend-import']);
+
+/**
+ * The request body, as an object or as bytes.
+ *
+ * The bytes are not a nicety. This used to accumulate chunks into a string —
+ * `raw += c` on a Buffer is a UTF-8 decode — and gzip is not valid UTF-8, so
+ * every invalid sequence became U+FFFD and an uploaded file arrived quietly
+ * destroyed, with the corruption looking like a fault in whoever *wrote* the
+ * file. Chunks are kept as Buffers and joined once.
+ *
+ * The limit is not a nicety either: before it, a POST of any size was buffered
+ * into memory in full.
+ */
+function readBody(req, { raw = false, limit = MAX_JSON_BODY } = {}) {
+  return new Promise((resolve, reject) => {
     if (req.method !== 'POST') return resolve(null);
-    let raw = '';
-    req.on('data', (c) => (raw += c));
+    const chunks = [];
+    let n = 0;
+    req.on('data', (c) => {
+      n += c.length;
+      if (n > limit) {
+        req.destroy();
+        reject(Object.assign(new Error('That file is too large.'), { status: 413 }));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('error', reject);
     req.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      if (raw) return resolve(buf);
+      // Unparseable JSON still resolves to {}, as it always has: handlers
+      // validate their own fields and say something more useful than this could.
       try {
-        resolve(raw ? JSON.parse(raw) : {});
+        resolve(buf.length ? JSON.parse(buf.toString('utf8')) : {});
       } catch {
         resolve({});
       }
@@ -789,7 +1268,7 @@ const PUBLIC = new Set([
  * navigation from accounts.spotify.com, so whatever comes back is what the
  * person reads.
  */
-async function handleCallback(url, res) {
+async function handleCallback(url, res, req) {
   const page = (title, body) => `<!doctype html><meta charset="utf-8"><title>${title}</title>
 <style>
   body{background:#121212;color:#fff;font:14px system-ui,sans-serif;margin:0;
@@ -825,7 +1304,26 @@ async function handleCallback(url, res) {
       sessionCookie(sessionId)
     );
   } catch (err) {
+    // A single-use state that has already been redeemed is not a failure when
+    // this browser is holding the session that redeeming it produced — it is the
+    // same sign-in arriving twice. Reporting "could not sign you in" to somebody
+    // who *is* signed in sends them back round a loop they have already
+    // finished, so answer with where they were going.
+    if (err?.code === 'stale_link' && userForRequest(req)) {
+      return send(
+        200,
+        page('Already signed in', `You're connected. <a href="${WEB_ORIGIN}">Open Mappify</a>.`)
+      );
+    }
     const message = String(err.message ?? err);
+    // A stale link with no session behind it is a real dead end, but a
+    // recoverable one — the way out is to start the flow again, so say where.
+    if (err?.code === 'stale_link') {
+      return send(
+        400,
+        page('Could not sign you in', `${message} <a href="${WEB_ORIGIN}">Open Mappify</a>.`)
+      );
+    }
     // The five-user cap is the single most likely reason a new person cannot get
     // in, and Spotify's own wording for it reads like a bug in the app.
     send(400, page('Could not sign you in', allowlistHint(message) ?? message));
@@ -847,7 +1345,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === '/api/auth/callback') return handleCallback(url, res);
+  if (url.pathname === '/api/auth/callback') return handleCallback(url, res, req);
 
   const handler = routes[url.pathname];
   if (!handler) {
@@ -867,7 +1365,10 @@ const server = http.createServer(async (req, res) => {
 
   inFlight++;
   try {
-    const body = await readBody(req);
+    const body = await readBody(
+      req,
+      BINARY.has(url.pathname) ? { raw: true, limit: MAX_UPLOAD } : undefined
+    );
 
     if (url.pathname === '/api/auth/logout') {
       endSession(req);
@@ -881,10 +1382,27 @@ const server = http.createServer(async (req, res) => {
     // all — that is enforcement, not etiquette.
     const run = () => handler(url, body);
     const result = userId ? await runAsUser({ userId, db: openUserDb(userId) }, run) : await run();
+
+    // A handler with bytes rather than an object says so, and every other
+    // handler keeps the shape it has: (url, body) => plain object. The
+    // alternative was intercepting each binary route above the table the way
+    // /api/auth/callback is intercepted, which is how this file would grow a
+    // second dispatcher one route at a time.
+    //
+    // writeHead's headers override the blanket application/json set at the top
+    // of the request, so that line is left alone.
+    if (result?.$raw) {
+      const { status = 200, headers, body: bytes } = result.$raw;
+      res.writeHead(status, headers).end(bytes);
+      return;
+    }
     res.writeHead(200).end(JSON.stringify(result));
   } catch (err) {
     const message = String(err.message ?? err);
-    res.writeHead(500).end(JSON.stringify({ error: message, hint: allowlistHint(message) }));
+    // A refused share file is the caller's problem, not a server fault: it gets
+    // the sentence share.js wrote and a status that says "you sent me that".
+    const status = err.name === 'BadShareFile' ? 400 : Number(err.status) || 500;
+    res.writeHead(status).end(JSON.stringify({ error: message, hint: allowlistHint(message) }));
   } finally {
     inFlight--;
   }

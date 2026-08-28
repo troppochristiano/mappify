@@ -12,6 +12,7 @@
 // back with a name and cover but no tracks. That is reported, not swallowed.
 
 import { getAccessToken } from '../auth.js';
+import { imageMime } from '../static.js';
 
 const API = 'https://api.spotify.com/v1';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -185,6 +186,53 @@ export async function fetchPlaylistItems(playlistId, { onProgress } = {}) {
     throw err;
   }
   return { tracks, readable: true };
+}
+
+/**
+ * The signed-in user's avatar as bytes, or null.
+ *
+ * Bytes rather than the URL because a share file travels: it is opened on a
+ * machine that has never talked to Spotify, possibly offline, possibly long
+ * after that CDN path has rotted. A URL would also make every viewer's browser
+ * announce itself to Spotify on someone else's behalf, which is a tracking pixel
+ * by another name.
+ *
+ * Never throws. An export without a face is worse than an export with one, but
+ * an export that *failed* because a CDN was slow is worse than both — so every
+ * unhappy path here ends in `null` and the card falls back to initials.
+ *
+ * The cap is not arbitrary. Base64 inflates by 4/3 and gzip cannot recompress a
+ * JPEG, so a 256KB portrait would add ~341KB to a ~460KB file — the avatar would
+ * cost about as much as the entire library it is attached to. A 160px portrait
+ * is typically 8–20KB, so this is generous rather than tight.
+ */
+export async function fetchAvatarBytes({ preferPx = 160, maxBytes = 128 * 1024 } = {}) {
+  try {
+    const profile = await me();
+    const images = (profile?.images ?? []).filter((i) => i?.url);
+    if (!images.length) return null;
+
+    // Smallest variant that is still big enough, so the file carries a portrait
+    // rather than a poster. Spotify usually offers 300 and 64; 64 upscaled into
+    // a card looks like a mistake, so anything under the floor is a last resort.
+    const big = images.filter((i) => (i.height ?? 0) >= preferPx).sort((a, b) => a.height - b.height);
+    const ordered = big.length ? big : [...images].sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
+
+    for (const img of ordered) {
+      // Plain fetch: i.scdn.co is public and a bearer token here would only leak
+      // it to a CDN that has no use for it.
+      const res = await fetch(img.url);
+      if (!res.ok) continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > maxBytes) continue;
+      const mime = imageMime(buf);
+      if (!mime) continue;
+      return { mime, b64: buf.toString('base64'), w: img.width ?? null, h: img.height ?? null };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** Artist detail, one at a time — the batch endpoint was removed. */

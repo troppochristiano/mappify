@@ -38,6 +38,33 @@ const TYPES = {
 };
 
 /**
+ * The image type a buffer actually is, from its leading bytes.
+ *
+ * Here rather than beside the caller because this file is already the one place
+ * that decides what a byte stream is, and the question is the same question —
+ * only asked of content rather than of a filename.
+ *
+ * Deliberately narrower than TYPES above, and the omission that matters is SVG.
+ * An avatar arrives inside a file a stranger sent over Discord and ends up in an
+ * `<img>` served from this origin; SVG is a document that can carry script, so
+ * accepting one would turn "import a friend" into "run their code on my
+ * library". The three raster formats Spotify actually serves are the whole list.
+ *
+ * Sniffed rather than trusted: a `Content-Type` header, or a `mime` field in a
+ * hand-written export, is a claim by whoever wrote it. The magic bytes are the
+ * file.
+ */
+export function imageMime(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return null;
+}
+
+/**
  * @returns {boolean} whether the request was answered here
  */
 export function serveStatic(req, res, pathname) {

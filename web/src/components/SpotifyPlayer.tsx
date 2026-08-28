@@ -56,11 +56,20 @@ function loadIframeApi(): Promise<IFrameApi> {
 
 export type NowPlaying = { uri: string; name: string; artist: string; place: string } | null
 
-export function SpotifyPlayer({ track }: { track: NowPlaying }) {
+export function SpotifyPlayer({ track, autoplay }: { track: NowPlaying; autoplay: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const controller = useRef<Controller | null>(null)
   const pending = useRef<string | null>(null)
   const loadedUri = useRef<string | null>(null)
+  /**
+   * Through a ref, so the effect below can stay keyed on the URI alone.
+   *
+   * The setting says what happens when a track *arrives*. Reading it as a
+   * dependency would make flipping the toggle reload whatever is playing, which
+   * is the one thing a preference about starting playback must not do.
+   */
+  const autoplayRef = useRef(autoplay)
+  autoplayRef.current = autoplay
 
   useEffect(() => {
     let cancelled = false
@@ -105,7 +114,10 @@ export function SpotifyPlayer({ track }: { track: NowPlaying }) {
     controller.current.loadUri(uri)
     // Autoplay only works after a user gesture. Selecting a place is one, but
     // Safari can still refuse; the embed shows its own play button in that case,
-    // so a refusal needs no handling of ours beyond not throwing.
+    // so a refusal needs no handling of ours beyond not throwing. Turning the
+    // setting off lands in exactly the same place, deliberately: the track is
+    // loaded and named, waiting on the embed's own button.
+    if (!autoplayRef.current) return
     try {
       controller.current.play()
     } catch {
@@ -117,8 +129,13 @@ export function SpotifyPlayer({ track }: { track: NowPlaying }) {
   // the embed. It used to carry a strip above it repeating the same track name
   // and a line of advice about autoplay, which was noise stacked on a widget
   // that says it all itself.
+  // Collapsed rather than unmounted when there is nothing to play. The
+  // controller is expensive to build and the API hands one out per host element,
+  // so a card that came and went would take the embed with it; and an empty
+  // 80px slot under the dock is a widget about nothing, holding the dock off the
+  // bottom edge for no reason.
   return (
-    <div className="player">
+    <div className={`player${track ? '' : ' player--idle'}`} aria-hidden={track ? undefined : true}>
       <div className="player-embed" ref={hostRef} />
     </div>
   )

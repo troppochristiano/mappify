@@ -10,6 +10,7 @@
     "dev": "node tools/dev.js",
     "build": "npm install --prefix web && npm run build --prefix web",
     "start": "node tools/start.js",
+    "bundle": "node tools/build-local.js",
     "server": "node server/api.js",
     "web": "npm run dev --prefix web",
     "db:init": "node server/db.js",

@@ -17,6 +17,7 @@
 
 import './env.js';
 import crypto from 'node:crypto';
+import { isLoopback } from './env.js';
 import { openControlDb, openUserDb } from './db.js';
 import { currentDb, currentUserId } from './context.js';
 import { rememberPending, claimPending, createSession } from './session.js';
@@ -46,12 +47,36 @@ const SCOPES = [
  * in" is where someone running Mappify on their own laptop gives up. A server
  * deployment sets the variable and never touches the stored one.
  */
+const storedClientId = () =>
+  openControlDb().prepare("SELECT value FROM settings WHERE key = 'client_id'").get()?.value ?? null;
+
+/**
+ * Where the client ID in use came from, so the setup screen can say so rather
+ * than showing a value it may not be allowed to change.
+ *
+ * @returns {'stored'|'env'|null}
+ */
+export function clientIdSource() {
+  const stored = storedClientId();
+  if (stored && isLoopback()) return 'stored';
+  if (process.env.SPOTIFY_CLIENT_ID?.trim()) return 'env';
+  return stored ? 'stored' : null;
+}
+
 export function clientId() {
   const fromEnv = process.env.SPOTIFY_CLIENT_ID?.trim();
-  if (fromEnv) return fromEnv;
+  const stored = storedClientId();
 
-  const stored = openControlDb().prepare("SELECT value FROM settings WHERE key = 'client_id'").get();
-  if (stored?.value) return stored.value;
+  // On a hosted instance the environment is the only authority: a deployment
+  // sets SPOTIFY_CLIENT_ID and nothing reachable over the network may overrule
+  // it. On loopback the person at the keyboard is the person who deployed it,
+  // and a value they entered on the setup screen is the more recent decision —
+  // otherwise a stale line in .env silently wins and the only way to change the
+  // app is to find and edit that file, which is the thing the screen exists to
+  // avoid.
+  if (stored && isLoopback()) return stored;
+  if (fromEnv) return fromEnv;
+  if (stored) return stored;
 
   throw new Error(
     'No Spotify client ID yet.\n' +
@@ -72,22 +97,33 @@ export function hasClientId() {
 /**
  * Records the client id entered on the setup screen.
  *
- * Refused once one is configured, and refused entirely when the environment
- * supplies it: on a hosted instance this endpoint would otherwise let a stranger
- * repoint the whole thing at their own Spotify application.
+ * Only ever called behind the loopback check in api.js — reachable from outside,
+ * this would let a stranger repoint somebody else's install at their own Spotify
+ * application. That check is also what makes overruling .env acceptable here.
+ *
+ * Replacing an existing one needs `replace`, so that a first-run screen left
+ * open in a stale tab cannot quietly clobber a working app; the caller has to
+ * mean it. A wrong app is the likeliest reason sign-in fails — Spotify answers a
+ * client ID it does not recognise with a bare "client_id: Invalid" — so being
+ * unable to change it without editing a file was the real gap.
  */
-export function setClientId(id) {
+export function setClientId(id, { replace = false } = {}) {
   const clean = String(id ?? '').trim();
   if (!/^[a-f0-9]{32}$/i.test(clean)) {
     throw new Error('That does not look like a Spotify client ID — it is 32 letters and numbers.');
   }
-  if (process.env.SPOTIFY_CLIENT_ID?.trim()) {
-    throw new Error('The client ID is set by the environment on this instance.');
-  }
   const db = openControlDb();
-  const existing = db.prepare("SELECT value FROM settings WHERE key = 'client_id'").get();
-  if (existing?.value) throw new Error('A client ID is already configured.');
-  db.prepare("INSERT INTO settings (key, value) VALUES ('client_id', ?)").run(clean);
+  // What is in use, not what is stored: with SPOTIFY_CLIENT_ID set there is no
+  // stored row yet, and checking only for one would let the first-run screen
+  // overrule a configured .env without anybody deciding to.
+  const existing = storedClientId() ?? process.env.SPOTIFY_CLIENT_ID?.trim() ?? null;
+  if (existing && !replace) throw new Error('A client ID is already configured.');
+  if (existing === clean) return clean;
+
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('client_id', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(clean);
   return clean;
 }
 
@@ -148,6 +184,11 @@ const readToken = (db) => db.prepare('SELECT * FROM auth WHERE id = 1').get() ??
 export function authStatus() {
   const row = readToken(currentDb());
   if (!row?.refresh_token) return { connected: false };
+  // Tokens belong to the Spotify application that minted them. After the client
+  // id changes they are so much scrap — getAccessToken() already refuses them —
+  // and reporting "connected" here would leave the panel offering an import that
+  // cannot work. Say what is true: sign in again.
+  if (row.client_id !== clientId()) return { connected: false, wrongApp: true };
   return {
     connected: true,
     expiresAt: row.expires_at,
@@ -198,7 +239,16 @@ export function beginAuth() {
  */
 export async function completeAuth(code, state) {
   const verifier = claimPending(state);
-  if (!verifier) throw new Error('This sign-in link has expired or was already used. Try again.');
+  if (!verifier) {
+    // Tagged rather than left as prose, because the caller has to tell this
+    // apart from a real failure: a state is single-use on purpose, so a reload
+    // of the callback URL, a back button, or a second click on Connect all land
+    // here *after* the sign-in they are replaying already worked. Only the
+    // handler can see whether this browser ended up with a session.
+    const err = new Error('This sign-in link has expired or was already used. Try again.');
+    err.code = 'stale_link';
+    throw err;
+  }
 
   const id = clientId();
   const tok = await tokenRequest({

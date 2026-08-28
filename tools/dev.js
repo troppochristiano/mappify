@@ -100,17 +100,34 @@ const env = {
   PORT: String(webPort),
   // In development the app is Vite's, not ours — the API only serves it in
   // production, so it has to be told where to send someone after a sign-in.
-  MAPPIFY_WEB: process.env.MAPPIFY_WEB ?? `http://localhost:${webPort}`,
+  MAPPIFY_WEB: process.env.MAPPIFY_WEB ?? `http://127.0.0.1:${webPort}`,
   // The API exiting on its own would take this whole pair down — stopAll() kills
   // Vite when a child dies. In development you stop it with Ctrl-C.
   MAPPIFY_AUTOQUIT: '0',
 };
 
-start('api', process.execPath, [path.join(ROOT, 'server', 'api.js')], ROOT, env);
+// --watch follows the import graph, so an edit to auth.js or db.js restarts the
+// API on its own. It also holds the process open after a crash, waiting for the
+// fix, instead of exiting and taking Vite down with it.
+//
+// --watch-preserve-output because the restart otherwise emits a full terminal
+// reset, which in here would wipe Vite's half of the output and the two URLs
+// printed at startup — and leaves a stray line behind once the tagger has
+// stripped the escape.
+start(
+  'api',
+  process.execPath,
+  ['--watch', '--watch-preserve-output', path.join(ROOT, 'server', 'api.js')],
+  ROOT,
+  env
+);
 start('web', 'npm', ['run', 'dev'], path.join(ROOT, 'web'), env);
 
 console.log(`\n  api  http://127.0.0.1:${apiPort}`);
-console.log(`  app  http://localhost:${webPort}\n`);
+// 127.0.0.1, never localhost: they are different cookie hosts, and the session
+// is set on the API's host when Spotify redirects the browser to the callback.
+// Opening the app on the other name signs you out without saying so.
+console.log(`  app  http://127.0.0.1:${webPort}\n`);
 
 // The redirect URI registered with Spotify names a port. On any other one the
 // sign-in will be refused by Spotify rather than by this code, so say it here

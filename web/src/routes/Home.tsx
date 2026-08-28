@@ -1,14 +1,12 @@
 import { useState, useEffect, useDeferredValue, useMemo, useCallback, useRef } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { api, type Artist, type PlaceLink, type PlaceTrack } from '../lib/api'
+import { api, type Artist, type PlaceLink, type PlaceTrack, type SearchScope } from '../lib/api'
 import {
   Globe,
   DOT_MODES,
-  LINK_MODES,
   rampAt,
   type DotMode,
-  type LinkMode,
   type FlyTarget,
 } from '../components/Globe'
 import { SpotifyPlayer, type NowPlaying } from '../components/SpotifyPlayer'
@@ -18,28 +16,61 @@ import { ArtistDetail } from '../components/ArtistDetail'
 import { SetupPanel } from '../components/SetupPanel'
 import { PlaylistBuilder } from '../components/PlaylistBuilder'
 import { TunedReadout } from '../components/TunedReadout'
-import { SourceFilter } from '../components/SourceFilter'
+import { SearchPanel } from '../components/SearchPanel'
+import { ComparePanel } from '../components/ComparePanel'
+import { CollabPanel } from '../components/CollabPanel'
+import { Dock, type DockTab } from '../components/Dock'
+import { friends as friendsApi } from '../lib/friends'
+import { FRIEND_COLOUR } from '../components/globe/layers'
+import { useFilters, serialiseChips, rememberLabels, labelsQuery } from '../lib/filters'
+import { useHotkeys } from '../lib/useHotkeys'
+import { countryBox } from '../components/globe/countryBox'
 
 /**
- * The closest the globe will pull back to when you pick a single place.
+ * How close the globe goes when you pick a single place.
  *
- * A city is a point, not a region, so this is much tighter than the framing a
- * country gets. It is a floor rather than a target: fly at least this close if
- * you are further out, and if you are already closer, hold the zoom and just
- * centre the place.
+ * A city is a point, not a region, so it is given a fixed zoom rather than a
+ * frame — there is no extent to fit. This is a target, not a floor: a floor
+ * would mean where you end up depends on where you happened to have been, which
+ * is precisely what made the camera feel unpredictable. Every city row is now
+ * the same view of a different place, which is what a list of peers should be.
+ *
+ * 8 shows the city with the country around it. Note it is a zoom, so the ground
+ * it covers narrows with latitude — Tromsø at 8 shows less of the map than
+ * Nairobi does. That is how every web map behaves and matches what people
+ * expect of a zoom level, so it is left alone rather than normalised.
  */
-const PLACE_ZOOM = 6
+const CITY_ZOOM = 8
 
 /**
- * How much of a click's zoom a hover holds back, in zoom levels.
+ * What the dock covers, mirroring `--dock-w` and `--dock-edge` in styles.css.
  *
- * Enough to see where you are being shown, short of the commitment a click
- * makes — so skimming a list reads as a tour rather than as a series of
- * decisions you have to undo. This was a 0.55 multiplier when the camera was
- * described by a projection scale; zoom levels are the log of that, so the same
- * pull-back is log2(0.55) ≈ 0.86 of a level.
+ * Duplicated from CSS for the reason the old panel width was: the camera has to
+ * know how much of the map it cannot use, and there is no way to ask a
+ * stylesheet that before the element exists.
+ *
+ * Two numbers rather than one because the dock covers two different shapes. Open
+ * it routinely runs the height of the window, so what it takes is a column at
+ * the left edge. Collapsed it is a head, a tab bar and the player — a strip in
+ * the corner — and claiming a column there would push every country to the right
+ * to clear something that is not in the way.
  */
-const HOVER_ZOOM_BACK = 0.86
+const DOCK_INSET = 384 // --dock-w 360 + --dock-edge 12, twice
+const DOCK_EDGE = 12 // --dock-edge
+
+/**
+ * Where a dock stops being a strip along the bottom and becomes a column at the
+ * side, as a share of the window.
+ *
+ * One threshold rather than both insets at once: framePadding caps the two axes
+ * against each other, so claiming a column *and* a strip frames a country into
+ * whatever is left, which past a certain sheet height is nothing.
+ */
+const DOCK_TALL = 0.6
+
+/** Below this the dock is edge to edge, so it is never a side column. Mirrors
+ *  the `max-width: 780px` block in styles.css. */
+const NARROW = 780
 
 /**
  * A stable empty array for the links prop.
@@ -48,6 +79,44 @@ const HOVER_ZOOM_BACK = 0.86
  * globe re-densify and re-upload every arc — so the literal is hoisted.
  */
 const EMPTY_LINKS: PlaceLink[] = []
+
+/** One object forever, so the arcs that need no markers never re-upload. */
+const NO_ENDS: { lon: number; lat: number }[] = []
+
+const COLLABS_KEY = 'mappify.collabs'
+
+const AUTOPLAY_KEY = 'mappify.autoplay'
+
+/** How long the loader takes to fade out. Mirrors `.globe-loading--gone`. */
+const LOADER_FADE = 320
+
+/** The longest the loader may cover the map before it comes off regardless. */
+const LOADER_MAX = 6000
+
+/**
+ * Whether the collaboration arcs start on, migrating the key this replaced.
+ *
+ * `mappify.linkMode` held one of three strings, and everybody who has ever run
+ * mappify has one — `'nesting'` for almost all of them, since it was the
+ * default. Reading it as a boolean would make every one of those strings
+ * truthy, so every returning user would come back to arcs they never asked for.
+ * Only `'collabs'` meant collabs; the old key is then dropped, so this runs at
+ * most once per browser.
+ */
+function readCollabs(): boolean {
+  const now = localStorage.getItem(COLLABS_KEY)
+  if (now !== null) return now === '1'
+  const was = localStorage.getItem('mappify.linkMode')
+  if (was === null) return false
+  localStorage.removeItem('mappify.linkMode')
+  return was === 'collabs'
+}
+
+/** A view pushed on top of the dock's active tab. See `stack` below. */
+type Push =
+  | { kind: 'artist'; id: string }
+  | { kind: 'collab'; a: string; b: string }
+  | { kind: 'playlist' }
 
 /**
  * The globe is the app. Search sits on top of it and filters the dots
@@ -58,84 +127,281 @@ export function Home() {
   const selectedQid = params.get('place')
   const [text, setText] = useState('')
   const q = useDeferredValue(text)
-  // Panels are one exclusive group: opening browse closes library and vice
-  // versa, so they behave as a toggle rather than stacking on top of each other.
-  const [panel, setPanel] = useState<'none' | 'browse' | 'library'>('none')
-  const showBrowse = panel === 'browse'
-  const showSetup = panel === 'library'
-  const [building, setBuilding] = useState(false)
+  /**
+   * The dock's section, and whether it is open.
+   *
+   * `tab` is never null: collapsed, the dock still says which section it will
+   * come back to, which is what lets the collapse affordance be a chevron on a
+   * named card rather than a mystery. The URL decides whether it starts open —
+   * a link to a place is a link to reading about that place — and it is an
+   * initialiser rather than an effect because an effect would flash a collapsed
+   * dock and frame the camera against an inset that was about to change.
+   */
+  const [tab, setTab] = useState<DockTab>('places')
+  const [dockOpen, setDockOpen] = useState(() =>
+    ['place', 'iso', 'city', 'unknown', 'cityless'].some((k) => params.has(k))
+  )
 
-  // Which encoding reads better is a judgement call, so it is a switch rather
-  // than a decision baked in — and it survives reloads so the two can be
-  // compared on the same view.
-  const [linkMode, setLinkMode] = useState<LinkMode>(
-    () => (localStorage.getItem('mappify.linkMode') as LinkMode) || 'nesting'
+  /**
+   * A pushed view: something you drilled into, rather than somewhere the tab bar
+   * can take you.
+   *
+   * An artist, a collaboration arc and the playlist builder are all opened *from*
+   * something — a row, a line on the globe, a button in the places tab — and
+   * none of them is a destination in its own right. So they stack on top of the
+   * active tab and are left by ← back, which means the tab bar underneath keeps
+   * saying where you will be when you get out.
+   */
+  /**
+   * How tall the dock is drawing itself, reported up from the drag.
+   *
+   * The camera is the only thing that needs it: a boolean cannot tell a sheet
+   * pulled to the top of the window from the same sheet pulled halfway down,
+   * and those cover different shapes of map.
+   */
+  const [dockH, setDockH] = useState(0)
+  const onDockHeight = useCallback((px: number) => setDockH(px), [])
+
+  /**
+   * Whether the map has painted. Latched: it is about arriving, not about being
+   * busy, so a filter change — which reuses the same map — must not put the
+   * cover back over a globe you are already reading.
+   */
+  const [globeReady, setGlobeReady] = useState(false)
+  const onGlobeReady = useCallback(() => setGlobeReady(true), [])
+
+  /**
+   * The map's own height, measured rather than taken from the window.
+   *
+   * They are the same number today — the globe is the whole page — but they are
+   * different quantities, and the day anything sits above the map they part
+   * company silently. The same argument the sheet-height comment in
+   * framePadding makes, for the same reason.
+   */
+  const routeRef = useRef<HTMLDivElement>(null)
+  const [route, setRoute] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = routeRef.current
+    if (!el) return
+    const read = () => setRoute({ w: el.clientWidth, h: el.clientHeight })
+    read()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  /**
+   * What the dock is covering, in the shape the camera can use.
+   *
+   * A tall dock on a wide screen is a column at the left. Anything else — a
+   * short one, or any of them on a phone, where the sheet runs edge to edge —
+   * is a strip along the bottom. Never both: framePadding caps the two axes
+   * against each other, so claiming a column *and* a strip leaves a country
+   * nothing to be framed into.
+   */
+  const dockTall = route.h > 0 && route.w > NARROW && dockH > route.h * DOCK_TALL
+  const dockLeft = dockTall ? DOCK_INSET : 0
+  const dockBottom = dockTall ? 0 : dockH + DOCK_EDGE * 2
+
+  const [stack, setStack] = useState<Push[]>([])
+  const pushed = stack[stack.length - 1] ?? null
+  const push = (p: Push) => {
+    setStack((s) => [...s, p])
+    setDockOpen(true)
+  }
+  const pop = () => setStack((s) => s.slice(0, -1))
+
+  /** Clicking the tab you are on collapses the dock; any other opens it. */
+  const onTab = (t: DockTab) => {
+    if (t === tab) return setDockOpen((o) => !o)
+    setTab(t)
+    setStack([])
+    setDockOpen(true)
+  }
+
+  /** Artist whose details are open on top of the dock — never a route change. */
+  const infoId = pushed?.kind === 'artist' ? pushed.id : null
+  /** The collaboration arc being read, if one was clicked. */
+  const collabPair = pushed?.kind === 'collab' ? pushed : null
+
+  /**
+   * The imported library being compared against, if any.
+   *
+   * Lifted out of the panel rather than kept inside it because the globe will
+   * want it too — a friend's places draw as a second colour over your own — and
+   * a selection that vanished every time the panel closed would take that
+   * overlay with it.
+   */
+  const [friendId, setFriendId] = useState<number | null>(null)
+
+  /** Their rings on or off, without forgetting which library is loaded. */
+  const [friendVisible, setFriendVisible] = useState(true)
+
+  /**
+   * Which library the search sheet looks in.
+   *
+   * Deliberately not in the URL, unlike the chips. A chip is part of what the
+   * globe is showing and belongs in a link somebody else can open; a scope names
+   * an imported library by a local row id, which would mean something different
+   * — or nothing — on anyone else's machine.
+   */
+  const [searchScope, setSearchScope] = useState<SearchScope>('mine')
+
+  // Persisted like dotMode and linkMode: which hue reads best against the green
+  // depends on the library, and comparing two friends is easier when each keeps
+  // the colour you gave them.
+  const [friendColour, setFriendColour] = useState(
+    () => localStorage.getItem('mappify.friendColour') || FRIEND_COLOUR
   )
   useEffect(() => {
-    localStorage.setItem('mappify.linkMode', linkMode)
-  }, [linkMode])
+    localStorage.setItem('mappify.friendColour', friendColour)
+  }, [friendColour])
 
+  const friendMap = useQuery({
+    queryKey: ['friend-points', friendId],
+    queryFn: () => friendsApi.one(friendId!),
+    enabled: friendId != null,
+  })
+
+  const friendPoints = useMemo(() => {
+    if (!friendVisible || friendId == null) return undefined
+    // parent_qid is null and stays null: an imported library is a flat list of
+    // places with no containment tree, so there is no hierarchy to claim.
+    return friendMap.data?.points.map((p) => ({ ...p, parent_qid: null }))
+  }, [friendVisible, friendId, friendMap.data])
+
+  // Containment is always drawn now, so the only thing left to decide is the
+  // collaboration arcs. Off by default: they are a question you go asking, and
+  // a first view of your own library should be the library.
+  const [collabs, setCollabs] = useState<boolean>(readCollabs)
+  useEffect(() => {
+    localStorage.setItem(COLLABS_KEY, collabs ? '1' : '0')
+  }, [collabs])
+
+  // Turning the arcs off takes the arc panel with them. It is a panel about one
+  // line on the globe, so leaving it open over a globe that no longer draws that
+  // line would be a reading of something that is not there.
+  useEffect(() => {
+    if (!collabs) setStack((s) => s.filter((x) => x.kind !== 'collab'))
+  }, [collabs])
+
+  // Colour by default: a first view of a library should say which places carry
+  // it, and the size ramp reads as "a scatter of dots" until you have found the
+  // legend. Only affects a browser that has never picked one.
   const [dotMode, setDotMode] = useState<DotMode>(
-    () => (localStorage.getItem('mappify.dotMode') as DotMode) || 'size'
+    () => (localStorage.getItem('mappify.dotMode') as DotMode) || 'colour'
   )
   useEffect(() => {
     localStorage.setItem('mappify.dotMode', dotMode)
   }, [dotMode])
 
-  // Closing from the toolbar button is the same act as closing from the ✕, so
-  // it undoes the same things — including the framing the globe was flown to.
-  const openBrowse = () => {
-    if (panel === 'browse') {
-      close()
-      setPanel('none')
-    } else setPanel('browse')
-  }
-  /** Artist whose details are open in the panel — never a route change. */
-  const [infoId, setInfoId] = useState<string | null>(null)
+  // Whether a track starts playing on its own when you pick one. On unless it
+  // has been turned off — the initialiser reads the *absence* of the key as on,
+  // rather than testing for '1', which would default everyone to off.
+  const [autoplay, setAutoplay] = useState<boolean>(
+    () => localStorage.getItem(AUTOPLAY_KEY) !== '0'
+  )
+  useEffect(() => {
+    localStorage.setItem(AUTOPLAY_KEY, autoplay ? '1' : '0')
+  }, [autoplay])
 
   // Which part of the library the whole view is showing. In the URL so a
-  // filtered globe is a link you can send someone.
-  const sourceId = params.get('source')
-  const setSourceId = (id: string | null) => {
+  // filtered globe is a link you can send someone — which is why the chips
+  // that replaced the old single-playlist dropdown live there too.
+  const { chips, filterKey, add, remove, toggle, clear } = useFilters()
+  const filters = useMemo(() => serialiseChips(chips), [filterKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // An old ?source= link is understood on arrival (see parseChips) and rewritten
+  // to the chip form here, so re-sharing it carries the shape everything else
+  // speaks. One pass: after this the param is gone.
+  useEffect(() => {
+    if (!params.get('source')) return
     const next = new URLSearchParams(params)
-    if (id) next.set('source', id)
-    else next.delete('source')
+    next.delete('source')
+    for (const f of filters) next.append('f', f)
     setParams(next, { replace: true })
-  }
+  }, [params, filters, setParams])
+
+  // The names behind chips that arrived as bare ids in a link. Chips made by
+  // clicking a result already know theirs, so this usually resolves nothing.
+  const labels = useQuery(labelsQuery(chips))
+  useEffect(() => {
+    if (labels.data?.labels) rememberLabels(labels.data.labels)
+  }, [labels.data])
 
   // keepPreviousData on both: an import refreshes these every ~25 seconds as it
   // resolves more artists, and without it the globe would blink empty each time.
+  // It does the same job for the chips — a filter that changes should redraw the
+  // globe, not empty it and fill it again.
   const map = useQuery({
-    queryKey: ['map', sourceId],
-    queryFn: () => api.map(sourceId),
+    queryKey: ['map', filterKey],
+    queryFn: () => api.map(filters),
     placeholderData: keepPreviousData,
   })
   // Always loaded, not just while browsing: a dot click needs the tree to work
   // out its ancestry for the breadcrumbs.
   const tree = useQuery({
-    queryKey: ['tree', sourceId],
-    queryFn: () => api.tree(sourceId),
+    queryKey: ['tree', filterKey],
+    queryFn: () => api.tree(filters),
     placeholderData: keepPreviousData,
   })
-  // Both relations arrive together; the toggle only picks which to draw.
-  const links = useQuery({ queryKey: ['links'], queryFn: api.links })
-  const shownLinks = useMemo(() => {
-    if (linkMode === 'nesting') return links.data?.nesting ?? EMPTY_LINKS
-    if (linkMode === 'collabs') return links.data?.collab ?? EMPTY_LINKS
-    return EMPTY_LINKS
-  }, [linkMode, links.data])
 
-  // Search drives the lit dots, so the filter is visible on the globe itself.
+  // The cover over the black stage, and its removal a beat later. Unmounting it
+  // on the same tick as the class would cut rather than fade; the timer is the
+  // fade's own length, kept next to it.
+  // A tab that is not being looked at does not paint, and a map that never
+  // paints never idles — so in a background tab the cover would sit over a globe
+  // that is finished and merely unwatched. The globe itself is mounted and
+  // correct throughout; this only promises that the cover always comes off.
+  useEffect(() => {
+    if (!map.data || globeReady) return
+    const id = setTimeout(() => setGlobeReady(true), LOADER_MAX)
+    return () => clearTimeout(id)
+  }, [map.data, globeReady])
+
+  const loading = !map.data || !globeReady
+  const [loaderGone, setLoaderGone] = useState(false)
+  useEffect(() => {
+    if (loading) return
+    const id = setTimeout(() => setLoaderGone(true), LOADER_FADE)
+    return () => clearTimeout(id)
+  }, [loading])
+  // Both relations arrive together, and both are drawn — the toggle only
+  // decides whether the collaborations are among them.
+  const links = useQuery({ queryKey: ['links'], queryFn: api.links })
+
+  // Read here rather than in App: the floating header that used to ask for
+  // these is gone, and the options tab is the only thing that shows them now.
+  const stats = useQuery({ queryKey: ['stats'], queryFn: api.stats })
+  const nestLinks = links.data?.nesting ?? EMPTY_LINKS
+  const collabLinks = collabs ? links.data?.collab ?? EMPTY_LINKS : EMPTY_LINKS
+
+  // Typed text lights dots; chips remove them. Two different acts, and this is
+  // the first — so it runs *within* the chips rather than instead of them.
   const matches = useQuery({
-    queryKey: ['artists', 'globe', q, sourceId],
-    queryFn: () => api.artists({ q, source: sourceId, limit: 200 }),
+    queryKey: ['artists', 'globe', q, filterKey],
+    queryFn: () => api.artists({ q, filters, limit: 200 }),
     enabled: q.trim().length > 0,
+    placeholderData: keepPreviousData,
   })
 
-  const litQids = useMemo(() => {
+  // Through a sorted string first, so two keystrokes that light the same places
+  // produce the same Set *object*. The globe bakes lit-ness into its GeoJSON —
+  // a dimmed dot has to lose its label as well as its colour — so a new Set
+  // identity means re-uploading every dot on the planet.
+  const litKey = useMemo(() => {
     if (!q.trim() || !matches.data) return null
-    return new Set(matches.data.items.map((a) => a.place_qid).filter(Boolean) as string[])
+    return matches.data.items
+      .map((a) => a.place_qid)
+      .filter(Boolean)
+      .sort()
+      .join(',')
   }, [q, matches.data])
+  const litQids = useMemo(
+    () => (litKey == null ? null : new Set(litKey ? litKey.split(',') : [])),
+    [litKey]
+  )
 
   const selected = map.data?.points.find((p) => p.qid === selectedQid) ?? null
 
@@ -160,7 +426,7 @@ export function Home() {
     'Selection'
 
   const artists = useQuery({
-    queryKey: ['artists', 'filter', selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, sourceId],
+    queryKey: ['artists', 'filter', selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, filterKey],
     queryFn: () =>
       api.artists({
         placeQid: selectedQid ?? undefined,
@@ -168,7 +434,7 @@ export function Home() {
         city: cityFilter ?? undefined,
         unknown: unknownFilter || undefined,
         cityless: citylessFilter || undefined,
-        source: sourceId,
+        filters,
         limit: 200,
       }),
     enabled: hasFilter,
@@ -204,7 +470,7 @@ export function Home() {
   // and deep links behave the same as clicking a dot.
   useEffect(() => {
     setManual(null)
-    setInfoId(null)
+    setStack([])
   }, [selectedQid])
 
   const [flyTo, setFlyTo] = useState<FlyTarget | null>(null)
@@ -240,33 +506,56 @@ export function Home() {
     setParams(next, { replace: true })
   }
 
+  useHotkeys({
+    onSlash: () => {
+      setTab('search')
+      setDockOpen(true)
+    },
+    // One ladder, most-recently-opened first, so Escape means "back out of this"
+    // rather than "close everything". A pushed view is more recent than the tab
+    // under it, and the tab is more recent than a selection made before either —
+    // so Escape walks out the way you walked in. Note what it does *not* do:
+    // collapsing the dock keeps the chips. Silently unfiltering the globe
+    // because a card went away would be a destructive act with no visible cause.
+    onEscape: () => {
+      if (stack.length) pop()
+      else if (dockOpen) setDockOpen(false)
+      else if (hasFilter) close()
+    },
+  })
+
   /**
-   * Where to point the globe for a country, and how close.
+   * The box to frame for a country.
    *
-   * A country has no dot of its own, so it is centred on the track-weighted
-   * centroid of the places inside it — that aims at where the music actually is
-   * rather than the middle of the landmass. The zoom is left to the camera,
-   * which is asked what would fit the box those places occupy: the old
-   * spread-to-scale formula had to be retuned by hand whenever the window
-   * changed shape, and this cannot fall out of step with the viewport.
+   * Its borders, not its music. Framing the bbox of the places you happen to
+   * have was the old behaviour and it is why hovering Italy showed you a few
+   * cities rather than Italy — one artist from Palermo and one from Milan
+   * framed the whole peninsula, two from Milan framed Lombardy.
+   *
+   * countryBox works from the country's own polygons and drops distant
+   * territories, so the United States is the lower 48 rather than a frame
+   * stretched to the Aleutians. The old data-derived box stays as the fallback
+   * for the three territories the topology has no code for.
    */
   const countryFrame = useCallback(
-    (iso: string) => {
+    (iso: string): FlyTarget | null => {
+      const box = countryBox(iso)
+      if (box) return { kind: 'fit', bounds: box }
+
       const pts = (map.data?.points ?? []).filter((p) => p.country_iso === iso)
       if (!pts.length) return null
-      const w = pts.reduce((n, p) => n + p.tracks, 0) || pts.length
-      const lat = pts.reduce((n, p) => n + p.lat * p.tracks, 0) / w
-      const lon = pts.reduce((n, p) => n + p.lon * p.tracks, 0) / w
       const lats = pts.map((p) => p.lat)
       const lons = pts.map((p) => p.lon)
       // A country holding a single place has no box to fit, so it is given a
       // little room around the point rather than a zero-width one.
       const pad = pts.length > 1 ? 0 : 0.5
-      const bounds: [[number, number], [number, number]] = [
-        [Math.min(...lons) - pad, Math.min(...lats) - pad],
-        [Math.max(...lons) + pad, Math.max(...lats) + pad],
-      ]
-      return { lat, lon, bounds }
+      return {
+        kind: 'fit',
+        bounds: [
+          [Math.min(...lons) - pad, Math.min(...lats) - pad],
+          [Math.max(...lons) + pad, Math.max(...lats) + pad],
+        ],
+      }
     },
     [map.data]
   )
@@ -276,15 +565,103 @@ export function Home() {
    * so this is a set rather than one id — hovering "Italy" shows you the whole
    * spread at once.
    */
-  const highlight = useMemo(() => {
-    if (!menuHover) return null
-    if (menuHover.kind === 'place') return new Set([menuHover.qid])
-    if (menuHover.kind === 'country' && menuHover.iso) {
-      return new Set(
-        (map.data?.points ?? []).filter((p) => p.country_iso === menuHover.iso).map((p) => p.qid)
-      )
+  /**
+   * Which dots are spotlit, as a stable string.
+   *
+   * Two things ask for a spotlight and they do not stack. A menu hover is
+   * transient — it lasts as long as the cursor rests on a row — while an arc
+   * selection persists, so the hover is always the more recent question and
+   * takes the globe for its duration. The arc does not go dark meanwhile: it
+   * stays lit by feature-state and its ends by their own layer, neither of which
+   * this touches. Same precedence as the country outline, which resolves
+   * menu-over-globe for the same reason.
+   *
+   * Null means "nothing asked, light everything". An empty string means "asked,
+   * and legitimately matches nothing", which dims the whole globe — right only
+   * when something else is carrying the answer, as it is for the eleven arcs
+   * whose ends are both dotless. No branch meaning "nothing asked" may return it.
+   *
+   * A string first, then the Set, for the reason litKey exists: a new Set
+   * identity re-uploads every dot on the planet, so an unchanged spotlight has
+   * to yield the same object.
+   */
+  const spotKey = useMemo(() => {
+    if (menuHover) {
+      if (menuHover.kind === 'place') return menuHover.qid
+      if (menuHover.kind === 'country' && menuHover.iso) {
+        return (map.data?.points ?? [])
+          .filter((p) => p.country_iso === menuHover.iso)
+          .map((p) => p.qid)
+          .sort()
+          .join(',')
+      }
+      return null
     }
+    // Deliberately not reading map.data, so a chip refetch cannot churn the
+    // spotlight while an arc is open.
+    if (collabPair) return [collabPair.a, collabPair.b].sort().join(',')
     return null
+  }, [menuHover, collabPair, map.data])
+
+  const highlight = useMemo(
+    () => (spotKey == null ? null : new Set(spotKey ? spotKey.split(',') : [])),
+    [spotKey]
+  )
+
+  /**
+   * The ends of the selected arc that have no dot right now.
+   *
+   * From the link row rather than from /api/collab, which does not carry
+   * coordinates and would be a round trip besides — these are the exact
+   * coordinates the arc was drawn from, in the same render the panel opens, so
+   * the marker and the dimming arrive together instead of the globe greying out
+   * and then growing its ends a moment later.
+   *
+   * `alon`/`blon`, never the arc's own vertices: greatCircle unwraps longitudes
+   * past ±180 to keep the line continuous across the antimeridian, and a point
+   * at 181° is not a place.
+   *
+   * Recomputed against the current dots rather than frozen at click time, so a
+   * chip that removes an end's dot grows a marker for it instead of leaving a
+   * lit arc ending in nothing.
+   */
+  const collabEnds = useMemo(() => {
+    if (!collabPair || !collabs) return NO_ENDS
+    const { a, b } = collabPair
+    const row = (links.data?.collab ?? []).find(
+      (l) => (l.a === a && l.b === b) || (l.a === b && l.b === a)
+    )
+    if (!row) return NO_ENDS
+    const have = new Set((map.data?.points ?? []).map((p) => p.qid))
+    const out: { lon: number; lat: number }[] = []
+    if (!have.has(row.a)) out.push({ lon: row.alon, lat: row.alat })
+    if (!have.has(row.b)) out.push({ lon: row.blon, lat: row.blat })
+    return out.length ? out : NO_ENDS
+  }, [collabPair, collabs, links.data, map.data])
+
+  /**
+   * The country to outline, which is a different question from which dots to
+   * light: hovering a city row means "show me where Manchester is", and drawing
+   * the United Kingdom around it is the answer that places it.
+   *
+   * A place with no country — the handful mappify could not resolve — outlines
+   * nothing rather than guessing.
+   */
+  const highlightIso = useMemo(() => {
+    if (!menuHover) return null
+    switch (menuHover.kind) {
+      case 'country':
+      // "Somewhere in the United States" names a country as surely as the
+      // country row does, and is the row most helped by being shown one.
+      case 'cityless':
+        return menuHover.iso ?? null
+      case 'place':
+        return map.data?.points.find((p) => p.qid === menuHover.qid)?.country_iso ?? null
+      // A city row groups every place of that name wherever it is, and unknown
+      // is the places with no country at all. Neither has one country to draw.
+      default:
+        return null
+    }
   }, [menuHover, map.data])
 
   /**
@@ -292,30 +669,29 @@ export function Home() {
    * Without the delay, running the cursor down the country list would spin the
    * globe once per row.
    *
-   * Hover moves in as well as around, but only as a floor and never as far as a
-   * click: skimming rows should show you the place, not park you in it. Because
-   * it is a floor, running down a list never yanks you back out — each row you
-   * pass either brings you closer or leaves the zoom alone.
+   * Hover and a click now ask for the same view, differing only by that pause.
+   * They used to differ by a held-back zoom, which meant clicking the row you
+   * were already hovering nudged the camera again for no reason anyone could
+   * see.
    */
   useEffect(() => {
     if (!menuHover) return
     const timer = window.setTimeout(() => {
-      if (menuHover.kind === 'country' && menuHover.iso) {
+      // 'cityless' is "somewhere in the United States" — it names a country as
+      // surely as a country row does, and already outlines one.
+      if ((menuHover.kind === 'country' || menuHover.kind === 'cityless') && menuHover.iso) {
         const frame = countryFrame(menuHover.iso)
         if (frame) {
-          setFlyTo({
-            ...frame,
-            zoomBack: HOVER_ZOOM_BACK,
-            key: `hover:${menuHover.iso}`,
-          })
+          setFlyTo({ ...frame, key: `hover:${menuHover.iso}` })
         }
       } else if (menuHover.kind === 'place') {
         const point = map.data?.points.find((p) => p.qid === menuHover.qid)
         if (point) {
           setFlyTo({
+            kind: 'point',
             lat: point.lat,
             lon: point.lon,
-            zoomAtLeast: PLACE_ZOOM - HOVER_ZOOM_BACK,
+            zoom: CITY_ZOOM,
             key: `hover:${menuHover.qid}`,
           })
         }
@@ -335,6 +711,11 @@ export function Home() {
    * source of truth, so a dot click and a menu click are the same event.
    */
   const onNavigate = (s: PlaceSelection) => {
+    // Picking a place is a new intent, exactly as opening an artist is. Left
+    // set, the arc's spotlight would outlive it — and the newly selected dot
+    // would keep its white fill (selection outranks dim) while silently losing
+    // its name, because the labels layer filters on dim.
+    setStack([])
     const next = new URLSearchParams(params)
     for (const k of ['place', 'iso', 'city', 'unknown', 'cityless']) next.delete(k)
 
@@ -342,7 +723,8 @@ export function Home() {
       const point = map.data?.points.find((p) => p.qid === s.qid)
       // A floor, not a framing: if you have already zoomed past this, picking a
       // dot just centres it and leaves your zoom alone.
-      if (point) setFlyTo({ lat: point.lat, lon: point.lon, zoomAtLeast: PLACE_ZOOM, key: s.qid })
+      if (point)
+        setFlyTo({ kind: 'point', lat: point.lat, lon: point.lon, zoom: CITY_ZOOM, key: s.qid })
       next.set('place', s.qid)
     } else if (s.kind === 'country' && s.iso) {
       const frame = countryFrame(s.iso)
@@ -360,7 +742,8 @@ export function Home() {
     // the level below it, and an unmounted row never fires mouseleave.
     setMenuHover(null)
     setParams(next, { replace: true })
-    setPanel('browse')
+    setTab('places')
+    setDockOpen(true)
   }
 
   /**
@@ -441,21 +824,275 @@ export function Home() {
     }))
   }, [countries, selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter])
 
+  /**
+   * What the dock head says.
+   *
+   * A pushed view wins over the tab under it. The rule for what goes here rather
+   * than in the body: the head carries a label the dock knows the moment it
+   * opens, so it never has to say nothing while a fetch lands. An artist is the
+   * exception — the route already has the name from the list you clicked.
+   */
+  const dockTitle = pushed
+    ? pushed.kind === 'artist'
+      ? infoArtist?.name ?? 'Artist'
+      : pushed.kind === 'collab'
+        ? 'Collaboration'
+        : 'New playlist'
+    : tab === 'places'
+      ? hasFilter
+        ? filterLabel
+        : 'Places'
+      : tab === 'search'
+        ? 'Search'
+        : tab === 'library'
+          ? 'Your library'
+          : tab === 'compare'
+            ? 'Compare'
+            : 'Options'
+
+  const dockBody = pushed ? (
+    pushed.kind === 'artist' ? (
+      <ArtistDetail id={pushed.id} onPlay={setManual} nowPlayingUri={nowPlaying?.uri ?? null} />
+    ) : pushed.kind === 'collab' ? (
+      <CollabPanel
+        a={pushed.a}
+        b={pushed.b}
+        // Pushed on top rather than replacing the arc: an artist opened from a
+        // collaboration is a step further in, and ← back is the way out of it.
+        onOpenArtist={(id) => push({ kind: 'artist', id })}
+        onPlay={setManual}
+        nowPlayingUri={nowPlaying?.uri ?? null}
+      />
+    ) : (
+      <PlaylistBuilder
+        placeQid={selectedQid ?? undefined}
+        iso={isoFilter ?? undefined}
+        placeName={filterLabel}
+      />
+    )
+  ) : tab === 'search' ? (
+    /* Search, and the filters built from it. It reads the same globe the places
+       tab does, so a chip added here narrows what that tab lists. */
+    <SearchPanel
+      text={text}
+      onText={setText}
+      chips={chips}
+      onAdd={add}
+      onToggle={toggle}
+      onRemove={remove}
+      onClear={clear}
+      onSelectPlace={(qid, label, owner) => {
+        // A friend's city turns the globe to it and stops there. Selecting it
+        // would open the places tab, which reads your own library — their name
+        // over your artists, and "0 artists" for a city only they have. Flown to
+        // by *their* coordinates, since it may be a place your own library has
+        // never resolved.
+        if (owner === 'theirs') {
+          const p = friendMap.data?.points.find((x) => x.qid === qid)
+          if (p) {
+            setFlyTo({ kind: 'point', lat: p.lat, lon: p.lon, zoom: CITY_ZOOM, key: `friend:${qid}` })
+          }
+          return
+        }
+        onNavigate({ kind: 'place', qid, label })
+      }}
+      onOpenArtist={(id) => push({ kind: 'artist', id })}
+      friendId={friendId}
+      friendName={friendMap.data?.friend.display_name ?? null}
+      friendColour={friendColour}
+      scope={searchScope}
+      onScope={setSearchScope}
+    />
+  ) : tab === 'library' ? (
+    <SetupPanel />
+  ) : tab === 'compare' ? (
+    <ComparePanel
+      selectedFriend={friendId}
+      onSelectFriend={setFriendId}
+      visible={friendVisible}
+      onVisible={setFriendVisible}
+      colour={friendColour}
+      onColour={setFriendColour}
+    />
+  ) : tab === 'options' ? (
+    /* How the globe draws itself. Not destinations like the other tabs, but they
+       were the two widest things on the old toolbar and they are settings you
+       change once and leave — which is exactly what a tab you have to open is
+       for. */
+    <div className="dock-options">
+      <section>
+        <h2>Dots</h2>
+        <div className="seg" role="group" aria-label="Dot encoding">
+          {DOT_MODES.map((m) => (
+            <button key={m.id} aria-pressed={dotMode === m.id} onClick={() => setDotMode(m.id)}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section>
+        <h2>Collaboration arcs</h2>
+        {/* Containment has no control: it is always drawn. It is the shape of
+            the library rather than a finding about it, and without it the dots
+            read as an unsorted scatter. */}
+        <div className="seg" role="group" aria-label="Collaboration arcs">
+          <button aria-pressed={collabs} onClick={() => setCollabs(true)}>
+            on
+          </button>
+          <button aria-pressed={!collabs} onClick={() => setCollabs(false)}>
+            off
+          </button>
+        </div>
+      </section>
+      <section>
+        <h2>Autoplay</h2>
+        {/* Off does not mean silence: the track you picked is still loaded and
+            named in the player, waiting on its own play button. Said here
+            because a toggle called autoplay could as easily mean "never touch
+            the player", and the two behave differently the moment you click a
+            song. */}
+        <p className="panel-sub">Off loads the track paused instead of starting it.</p>
+        <div className="seg" role="group" aria-label="Autoplay">
+          <button aria-pressed={autoplay} onClick={() => setAutoplay(true)}>
+            on
+          </button>
+          <button aria-pressed={!autoplay} onClick={() => setAutoplay(false)}>
+            off
+          </button>
+        </div>
+      </section>
+      {/* The counts the floating header used to carry. They belong with the
+          other things about the view rather than over the map. */}
+      <section className="dock-stats">
+        <h2>This library</h2>
+        <dl>
+          <div>
+            <dt>tracks</dt>
+            <dd>{stats.data?.tracks ?? '—'}</dd>
+          </div>
+          <div>
+            <dt>artists</dt>
+            <dd>{stats.data?.artists ?? '—'}</dd>
+          </div>
+          {/* Two different numbers, so both, named for what they each are: one
+              counts rows with no country at all, the other counts tracks the
+              map could find nowhere to put. */}
+          <div>
+            <dt>unknown origin</dt>
+            <dd>{stats.data ? stats.data.trackRows - stats.data.withCountry : '—'}</dd>
+          </div>
+          <div>
+            <dt>no mappable origin</dt>
+            <dd>{map.data?.unmappedTracks ?? '—'}</dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  ) : (
+    /* One view for browsing and for a selected place. A dot click and a walk
+       through the menu both set the URL, and this reads only from that, so they
+       cannot diverge. */
+    <PlaceView
+      crumbs={crumbs}
+      nested={nested}
+      onNavigate={onNavigate}
+      onHoverRow={setMenuHover}
+      subtitle={
+        hasFilter ? (
+          <>
+            {selected
+              ? `${selected.tracks} tracks · ${selected.artists} artists`
+              : `${artists.data?.total ?? 0} artists`}
+            <br />
+            <span style={{ color: 'var(--dim)' }}>
+              {unknownFilter
+                ? 'No origin recorded in MusicBrainz or Wikidata for these.'
+                : 'Bands are placed where they formed; solo artists where they were born.'}
+            </span>
+          </>
+        ) : null
+      }
+      actions={
+        // Any selection that resolves to tracks can become a playlist — a whole
+        // country as readily as one city. It sits above the artists so it is
+        // reachable without scrolling past 200 rows.
+        hasFilter && (selectedQid || isoFilter) ? (
+          <button
+            className="primary"
+            style={{ marginBottom: 14 }}
+            onClick={() => push({ kind: 'playlist' })}
+          >
+            Make a {filterLabel} playlist
+          </button>
+        ) : null
+      }
+      body={
+        hasFilter ? (
+          <>
+            <h2 style={{ marginTop: 14 }}>Artists</h2>
+            <ul className="artist-list">
+              {artists.data?.items.map((a) => (
+                <ArtistRow
+                  key={a.spotify_id}
+                  artist={a}
+                  onPlayArtist={playArtist}
+                  onPlayTrack={setManual}
+                  onInfo={(id) => push({ kind: 'artist', id })}
+                  showPlace={a.city !== selected?.name}
+                  nowPlayingUri={nowPlaying?.uri ?? null}
+                />
+              ))}
+            </ul>
+          </>
+        ) : null
+      }
+    />
+  )
+
   return (
-    <div className="globe-route">
+    <div className="globe-route" ref={routeRef}>
       {map.data && (
         <Globe
           points={map.data.points}
           litQids={litQids}
+          friendPoints={friendPoints}
+          friendColour={friendColour}
           selectedQid={selectedQid}
           onSelect={select}
           onHover={onHover}
           flyTo={flyTo}
           dotMode={dotMode}
-          links={shownLinks}
-          linkMode={linkMode}
+          links={collabLinks}
+          nestLinks={nestLinks}
+          collabs={collabs}
           highlight={highlight}
+          highlightIso={highlightIso}
+          onSelectLink={(a, b) => push({ kind: 'collab', a, b })}
+          linkEnds={collabEnds}
+          selectedLink={collabPair ? `${collabPair.a}~${collabPair.b}` : null}
+          // Two shapes, one card — see DOCK_TALL.
+          obscuredLeft={dockLeft}
+          obscuredRight={0}
+          obscuredBottom={dockBottom}
+          onReady={onGlobeReady}
         />
+      )}
+
+      {/* Two waits, one cover: the library has to arrive before there is a globe
+          to build, and the globe then has to paint. Told apart in the wording,
+          because the first is the slow one on a cold start and "loading the
+          globe" over a request for the library would be a lie about what is
+          taking the time. Left mounted for the length of the fade so the map is
+          uncovered rather than revealed by a cut. */}
+      {!loaderGone && (
+        <div
+          className={`globe-loading${loading ? '' : ' globe-loading--gone'}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="spinner" aria-hidden="true" />
+          <span>{map.data ? 'Drawing the globe…' : 'Loading your library…'}</span>
+        </div>
       )}
 
       {/* Colour needs a key to be readable at all; size does not. */}
@@ -478,7 +1115,7 @@ export function Home() {
           fixed crosshair was decoration that also blocked the view. Hovering
           still names the place under the cursor. */}
       {/* Shown even with a place selected: hovering to identify neighbouring
-          dots is exactly what you do while a panel is open. */}
+          dots is exactly what you do while the dock is open. */}
       {map.data && (
         <TunedReadout
           points={map.data.points}
@@ -487,155 +1124,25 @@ export function Home() {
         />
       )}
 
-      <div className="globe-search">
-        <input
-          type="search"
-          value={text}
-          placeholder="search artists and places"
-          onChange={(e) => setText(e.target.value)}
-          autoComplete="off"
-        />
-        <div className="seg" role="group" aria-label="Dot encoding">
-          {DOT_MODES.map((m) => (
-            <button key={m.id} aria-pressed={dotMode === m.id} onClick={() => setDotMode(m.id)}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <div className="seg" role="group" aria-label="Strings between places">
-          {LINK_MODES.map((m) => (
-            <button key={m.id} aria-pressed={linkMode === m.id} onClick={() => setLinkMode(m.id)}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <SourceFilter value={sourceId} onChange={setSourceId} />
-        <button className="ghost" aria-pressed={showBrowse} onClick={openBrowse}>places</button>
-        <button className="ghost" aria-pressed={showSetup} onClick={() => setPanel((p) => (p === 'library' ? 'none' : 'library'))}>library</button>
+      {/* Everything the app can show, and what is playing, as one column in the
+          corner. The dock grows upward off the player rather than either being
+          pinned to an edge of its own — see .dock-stack. */}
+      <div className="dock-stack">
+        <Dock
+          tab={tab}
+          open={dockOpen}
+          onTab={onTab}
+          onSelect={setTab}
+          onOpenChange={setDockOpen}
+          onHeight={onDockHeight}
+          onBack={pushed ? pop : undefined}
+          title={dockTitle}
+          badges={{ search: chips.length }}
+        >
+          {dockBody}
+        </Dock>
+        <SpotifyPlayer track={nowPlaying} autoplay={autoplay} />
       </div>
-
-      <div className="globe-hint">
-        drag to spin · scroll to zoom toward the cursor · click a dot to tune in
-        {map.data ? ` · ${map.data.unmappedTracks} tracks have no mappable origin` : ''}
-      </div>
-
-      <SpotifyPlayer track={nowPlaying} />
-
-
-      {/* Artist info, in this panel rather than on a page of its own. */}
-      {infoId && (
-        <div className="panel">
-          <div className="panel-head">
-            <button className="ghost" onClick={() => setInfoId(null)}>← back</button>
-            <h1>{infoArtist?.name ?? 'Artist'}</h1>
-            <button className="close" onClick={() => setInfoId(null)} aria-label="Close">×</button>
-          </div>
-          <ArtistDetail id={infoId} onPlay={setManual} nowPlayingUri={nowPlaying?.uri ?? null} />
-        </div>
-      )}
-
-      {/* Search results: artists, never tracks. */}
-      {q.trim() && !selectedQid && !infoId && (
-        <div className="panel">
-          <div className="panel-head">
-            <h1>{matches.data?.total ?? 0} artists</h1>
-            <button className="close" onClick={() => setText('')} aria-label="Clear search">×</button>
-          </div>
-          <p className="panel-sub">
-            Lit dots are where these artists are from. Click a row for their tracks,
-            ▶ to play something of theirs, <b>i</b> for details.
-          </p>
-          <ul className="artist-list">
-            {matches.data?.items.map((a) => (
-              <ArtistRow
-                key={a.spotify_id}
-                artist={a}
-                onPlayArtist={playArtist}
-                onPlayTrack={setManual}
-                onInfo={setInfoId}
-                nowPlayingUri={nowPlaying?.uri ?? null}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {showSetup && <SetupPanel onClose={() => setPanel('none')} />}
-
-      {building && (selectedQid || isoFilter) && (
-        <PlaylistBuilder
-          placeQid={selectedQid ?? undefined}
-          iso={isoFilter ?? undefined}
-          placeName={filterLabel}
-          onClose={() => setBuilding(false)}
-        />
-      )}
-
-      {/* One panel for browsing and for a selected place. A dot click and a walk
-          through the menu both set the URL, and this reads only from that, so
-          they cannot diverge. */}
-      {(showBrowse || hasFilter) && !infoId && !building && !showSetup && !q.trim() && (
-        <PlaceView
-          crumbs={crumbs}
-          nested={nested}
-          onNavigate={onNavigate}
-          onHoverRow={setMenuHover}
-          onClose={() => {
-            close()
-            setPanel('none')
-          }}
-          title={hasFilter ? filterLabel : 'Places'}
-          subtitle={
-            hasFilter ? (
-              <>
-                {selected
-                  ? `${selected.tracks} tracks · ${selected.artists} artists`
-                  : `${artists.data?.total ?? 0} artists`}
-                <br />
-                <span style={{ color: 'var(--dim)' }}>
-                  {unknownFilter
-                    ? 'No origin recorded in MusicBrainz or Wikidata for these.'
-                    : 'Bands are placed where they formed; solo artists where they were born.'}
-                </span>
-              </>
-            ) : null
-          }
-          actions={
-            // Any selection that resolves to tracks can become a playlist — a
-            // whole country as readily as one city. It sits above the artists so
-            // it is reachable without scrolling past 200 rows.
-            hasFilter && (selectedQid || isoFilter) ? (
-              <button
-                className="primary"
-                style={{ marginBottom: 14 }}
-                onClick={() => setBuilding(true)}
-              >
-                Make a {filterLabel} playlist
-              </button>
-            ) : null
-          }
-          body={
-            hasFilter ? (
-              <>
-                <h2 style={{ marginTop: 14 }}>Artists</h2>
-                <ul className="artist-list">
-                  {artists.data?.items.map((a) => (
-                    <ArtistRow
-                      key={a.spotify_id}
-                      artist={a}
-                      onPlayArtist={playArtist}
-                      onPlayTrack={setManual}
-                      onInfo={setInfoId}
-                      showPlace={a.city !== selected?.name}
-                      nowPlayingUri={nowPlaying?.uri ?? null}
-                    />
-                  ))}
-                </ul>
-              </>
-            ) : null
-          }
-        />
-      )}
     </div>
   )
 }

@@ -5,7 +5,8 @@
       "name": "mappify",
       "runtimeExecutable": "node",
       "runtimeArgs": ["tools/dev.js"],
-      "port": 5273
+      "port": 5273,
+      "url": "http://127.0.0.1:5273"
     }
   ]
 }

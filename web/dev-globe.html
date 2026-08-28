@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Globe hover harness</title>
+    <style>
+      html, body, #root { margin: 0; height: 100%; background: #08080a; }
+      .globe-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // The preview pane this is checked in is often not compositing, and a
+      // hidden document never fires requestAnimationFrame — so MapLibre's whole
+      // render loop, placement included, would never run. On a timer it does.
+      // Inline and before the module, because imports are hoisted past anything
+      // written at the top of a module.
+      window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16)
+      window.cancelAnimationFrame = (id) => clearTimeout(id)
+
+      // Keep the drawing buffer around so the check can read the pixels back.
+      // Nothing but a harness would ask for this — it costs a copy per frame.
+      const getContext = HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.getContext = function (kind, attrs) {
+        if (kind === 'webgl2' || kind === 'webgl') {
+          attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true })
+        }
+        return getContext.call(this, kind, attrs)
+      }
+    </script>
+    <script type="module" src="/src/dev-globe.tsx"></script>
+  </body>
+</html>

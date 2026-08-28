@@ -29,7 +29,7 @@ export function useImportStatus() {
   const revision = status.data?.revision ?? 0
   useEffect(() => {
     if (!revision) return
-    // Prefix matches, so ['map', sourceId] for every source refreshes too.
+    // Prefix matches, so ['map', filterKey] for every filter refreshes too.
     for (const key of [['map'], ['tree'], ['links'], ['stats'], ['sources']]) {
       qc.invalidateQueries({ queryKey: key })
     }

@@ -13,13 +13,11 @@ export function PlaylistBuilder({
   placeQid,
   iso,
   placeName,
-  onClose,
 }: {
   /** Either a place or a whole country — the server takes both. */
   placeQid?: string
   iso?: string
   placeName: string
-  onClose: () => void
 }) {
   const [name, setName] = useState(placeName)
   const scope = { placeQid, iso }
@@ -34,12 +32,7 @@ export function PlaylistBuilder({
   const p = preview.data
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h1>New playlist</h1>
-        <button className="close" onClick={onClose} aria-label="Close">×</button>
-      </div>
-
+    <div>
       {preview.isLoading && <p className="empty">Counting tracks…</p>}
 
       {p && !create.data && (

@@ -24,6 +24,80 @@ export type Artist = {
 
 export type PlaceHit = { qid: string; name: string; country_iso: string | null; artists: number }
 
+/** A place as a search result: a PlaceHit that also knows how loud it is. */
+export type PlaceResult = PlaceHit & { tracks: number }
+
+/** An artist as a search result — the columns a row and a chip need, no more. */
+export type ArtistHit = {
+  spotify_id: string
+  name: string
+  city: string | null
+  place_qid: string | null
+  tracks: number
+  image_url: string | null
+}
+
+/** A source as a search result. Narrower than SourceRow: a chip needs a name. */
+export type PlaylistHit = {
+  id: number
+  kind: string
+  name: string
+  image_url: string | null
+  imported: number
+}
+
+/**
+ * Which library a search covers.
+ *
+ * 'theirs' and 'both' need a friend id; without one the server answers 'mine'
+ * rather than erroring, so a link that outlives a removed friend still works.
+ */
+export type SearchScope = 'mine' | 'theirs' | 'both'
+
+/**
+ * Which library a row came from.
+ *
+ * Present on every row, including your own. Labelling only the friend's side
+ * would make yours identifiable by the *absence* of a field, which is a rule a
+ * reader has to be told rather than one they can see.
+ */
+export type Owner = 'mine' | 'theirs'
+
+export type SearchResults = {
+  artists: (ArtistHit & { owner: Owner })[]
+  places: (PlaceResult & { owner: Owner })[]
+  playlists: PlaylistHit[]
+  scope: SearchScope
+  friend: number | null
+  /**
+   * Kinds of result that cannot exist in this scope, with the reason.
+   *
+   * Distinct from "found nothing": a shared library carries no playlists at all,
+   * and an empty list saying so is the difference between a control that means
+   * two things in two scopes and one that admits which it means.
+   */
+  unavailable?: { playlists?: string }
+}
+
+export type FilterLabels = {
+  labels: Record<string, string>
+  targets: string[]
+  /**
+   * What the server did with the chips it was sent.
+   *
+   * `applied` can be less than `requested` — there is a per-kind cap, because a
+   * place chip is a recursive walk of the settlement hierarchy and a hundred of
+   * them is real work. When the two differ the panel has to say so: a URL
+   * listing forty filters over a globe obeying thirty-two, with nothing on
+   * screen admitting it, is the failure this field exists to prevent.
+   *
+   * `dropped` names the chips that did not make it, in URL order. `invalid` is
+   * a different thing — tokens that were not chips at all, which only a
+   * hand-written URL produces.
+   */
+  limits: { requested: number; applied: number; dropped: string[]; invalid: number }
+}
+
 export type PlaceTrack = {
   spotify_id: string
   name: string
@@ -98,17 +172,48 @@ export type PlaceLink = {
   tracks?: number
 }
 
+/**
+ * What is behind one collaboration arc.
+ *
+ * An arc means "these two places are credited on the same track", so the thing
+ * to show is the tracks — and on each, which artists came from which end. The
+ * pair is unordered on the globe and stays unordered here; `a` and `b` are
+ * whichever way round the click happened to name them.
+ */
+export type CollabTrack = {
+  spotify_id: string
+  name: string
+  album: string | null
+  uri: string | null
+  url: string | null
+  image_url: string | null
+  /** Credited artists from either end, each tagged with the place they are from. */
+  artists: { spotify_id: string; name: string; qid: string }[]
+}
+
+export type CollabDetail = {
+  a: { qid: string; name: string; country_iso: string | null }
+  b: { qid: string; name: string; country_iso: string | null }
+  tracks: CollabTrack[]
+  /** Distinct artists on each side, for the summary line. */
+  artistCount: number
+}
+
 export type SetupInfo = {
   /** Whether this browser has a session at all — everything else is per-user. */
   signedIn: boolean
   user: string | null
   /** No Spotify app registered yet: the first-run screen comes before sign-in. */
   needsClientId: boolean
+  /** The Spotify app in use, to check against the dashboard when sign-in fails. */
+  clientId: string | null
+  /** 'env' means .env owns it and the change control has to stay out of the way. */
+  clientIdSource: 'stored' | 'env' | null
   /** What Spotify must have on file, shown so it can be copied rather than typed. */
   redirectUri: string
   /** Your own machine, rather than someone's shared instance. */
   local: boolean
-  spotify: { connected: boolean; stale?: boolean }
+  spotify: { connected: boolean; stale?: boolean; wrongApp?: boolean }
   index: { kind: string; artist_rows?: string; area_rows?: string; dump_version?: string }
   hasLibrary: boolean
 }
@@ -213,6 +318,14 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return json as T
 }
 
+/** `?f=…&f=…`, or nothing at all when there are no chips. */
+const filterQuery = (filters?: string[]) => {
+  if (!filters?.length) return ''
+  const sp = new URLSearchParams()
+  for (const f of filters) sp.append('f', f)
+  return `?${sp}`
+}
+
 export const api = {
   stats: () => get<Stats>('/api/stats'),
   artists: (params: {
@@ -224,9 +337,12 @@ export const api = {
     unknown?: boolean
     /** Known country, no town — pair with `iso`. */
     cityless?: boolean
-    /** Restrict to tracks from one library source. */
-    source?: string | null
+    /** The filter chips, already serialised — see lib/filters.ts. */
+    filters?: string[]
     limit?: number
+    /** Where to resume. The endpoint has always taken it; nothing sent it until
+     *  the artist picker needed to page past its 200-row ceiling. */
+    offset?: number
   }) => {
     const sp = new URLSearchParams()
     if (params.q) sp.set('q', params.q)
@@ -236,17 +352,41 @@ export const api = {
     if (params.placeQid) sp.set('placeQid', params.placeQid)
     if (params.unknown) sp.set('unknown', '1')
     if (params.cityless) sp.set('cityless', '1')
-    if (params.source) sp.set('source', params.source)
+    for (const f of params.filters ?? []) sp.append('f', f)
     sp.set('limit', String(params.limit ?? 60))
+    if (params.offset) sp.set('offset', String(params.offset))
     return get<{ total: number; items: Artist[] }>(`/api/artists?${sp}`)
   },
-  tree: (source?: string | null) =>
-    get<{ countries: CountryNode[] }>(`/api/tree${source ? `?source=${source}` : ''}`),
-  map: (source?: string | null) =>
-    get<{ points: MapPoint[]; unmappedTracks: number }>(
-      `/api/map${source ? `?source=${source}` : ''}`
-    ),
+  tree: (filters?: string[]) =>
+    get<{ countries: CountryNode[] }>(`/api/tree${filterQuery(filters)}`),
+  map: (filters?: string[]) =>
+    get<{ points: MapPoint[]; unmappedTracks: number }>(`/api/map${filterQuery(filters)}`),
+  /**
+   * Everything you could turn into a chip, for one query.
+   *
+   * Not narrowed by the chips already applied: you are looking for the next
+   * thing to include or rule out, and hiding candidates that fall outside the
+   * current filter is how a filter becomes a cage. An empty query answers with
+   * the library instead of with nothing.
+   */
+  search: (q: string, scope: SearchScope = 'mine', friend?: number | null) => {
+    const sp = new URLSearchParams({ q })
+    // Omitted entirely in the default scope, so the common request is the same
+    // URL it has always been and the cache key does not change under existing
+    // callers.
+    if (scope !== 'mine' && friend != null) {
+      sp.set('scope', scope)
+      sp.set('friend', String(friend))
+    }
+    return get<SearchResults>(`/api/search?${sp}`)
+  },
+  /** The names behind chips that came out of a link rather than out of a click. */
+  filterLabels: (filters: string[]) =>
+    get<FilterLabels>(`/api/filter-labels${filterQuery(filters)}`),
   links: () => get<{ nesting: PlaceLink[]; collab: PlaceLink[] }>('/api/links'),
+  /** What one collaboration arc is made of. The pair is unordered. */
+  collab: (a: string, b: string) =>
+    get<CollabDetail>(`/api/collab?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`),
   placeSearch: (q: string) =>
     get<{ places: PlaceHit[] }>(`/api/place-search?q=${encodeURIComponent(q)}`),
   setArtistOrigin: (spotifyId: string, placeQid: string | null) =>
@@ -259,8 +399,8 @@ export const api = {
   connect: () => get<{ authUrl: string }>('/api/auth/connect'),
   logout: () => get<{ signedIn: false }>('/api/auth/logout'),
   quit: () => get<{ stopping: boolean }>('/api/quit'),
-  setClientId: (clientId: string) =>
-    post<{ clientId: string; redirectUri: string }>('/api/config/client-id', { clientId }),
+  setClientId: (clientId: string, replace = false) =>
+    post<{ clientId: string; redirectUri: string }>('/api/config/client-id', { clientId, replace }),
   importStatus: () => get<ImportStatus>('/api/import/status'),
   startImport: () => get<ImportStatus>('/api/import'),
   cancelImport: () => get<{ cancelling: boolean }>('/api/import/cancel'),

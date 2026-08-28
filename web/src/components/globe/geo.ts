@@ -1,6 +1,7 @@
 import { feature } from 'topojson-client'
 import type { Topology } from 'topojson-specification'
 import worldTopo from 'world-atlas/countries-110m.json'
+import { ISO_NUMERIC_TO_ALPHA2 } from './iso'
 import type { MapPoint, PlaceLink } from '../../lib/api'
 
 /**
@@ -16,19 +17,36 @@ type Feat<G, P> = { type: 'Feature'; id?: string | number; geometry: G; properti
 type Point = { type: 'Point'; coordinates: [number, number] }
 type Line = { type: 'LineString'; coordinates: [number, number][] }
 
+export type CountryProps = {
+  /**
+   * Alpha-2, or null for the three territories the topology gives no numeric
+   * code. Null never matches a highlight, which is the right outcome: mappify
+   * has no alpha-2 for them either.
+   */
+  iso: string | null
+}
+
 /**
  * Country outlines, converted once.
  *
  * The canvas globe walked this topology every frame; here it is handed to the
  * map as a source and never touched again. It is drawn as a thin overlay that
- * only appears once the imagery has run out of detail — see the coast layer.
+ * only appears once the imagery has run out of detail — see the coast layer —
+ * and, filtered to one country, as the hover highlight.
  */
 export const coastlines = (() => {
   const topo = worldTopo as unknown as Topology
-  return feature(topo, topo.objects.countries) as unknown as FC<
+  const fc = feature(topo, topo.objects.countries) as unknown as FC<
     { type: string; coordinates: unknown },
-    Record<string, never>
+    CountryProps
   >
+  // The same features carry the outline *and* the highlight: one copy of the
+  // geometry in the style, filtered two different ways, rather than a second
+  // source holding the identical ~100KB.
+  for (const f of fc.features) {
+    f.properties = { iso: ISO_NUMERIC_TO_ALPHA2[String(f.id).padStart(3, '0')] ?? null }
+  }
+  return fc
 })()
 
 export type DotProps = {
@@ -77,9 +95,26 @@ export function dotsToGeoJSON(
   /** Null means no filter: everything is lit. */
   lit: Set<string> | null,
   /** Null means no spotlight. */
-  spot: Set<string> | null
+  spot: Set<string> | null,
+  /**
+   * The track count that counts as full size, if it is not this set's own
+   * maximum.
+   *
+   * Both encodings below are *relative*, so the scale is decided by whatever
+   * array is passed in. That is right for one library on its own and wrong the
+   * moment two are drawn together: called separately for a friend's places,
+   * their biggest city renders exactly as large as your biggest city whether
+   * they have thirty tracks or three thousand. The overlay exists to make that
+   * comparison, so it has to hand both calls the maximum across the union.
+   *
+   * Defaults to the in-array maximum, which is what every existing caller wants
+   * and what this always did.
+   */
+  scaleMax?: number
 ): FC<Point, DotProps> {
-  const max = points.reduce((m, p) => (p.tracks > m ? p.tracks : m), 1)
+  // Floored at 1 for the same reason the reduce seeds at 1: an empty library, or
+  // a union maximum of zero, would otherwise divide every size by zero.
+  const max = Math.max(1, scaleMax ?? points.reduce((m, p) => (p.tracks > m ? p.tracks : m), 1))
   const logMax = Math.log(1 + max)
   return {
     type: 'FeatureCollection',
@@ -168,7 +203,24 @@ function greatCircle(alon: number, alat: number, blon: number, blat: number): [n
   return out
 }
 
-export type LinkProps = { a: string; b: string; tracks: number }
+export type LinkProps = {
+  a: string
+  b: string
+  tracks: number
+  /**
+   * Where the arc's two ends actually are.
+   *
+   * Carried rather than read back off the geometry, because the geometry is not
+   * a pair of places: `greatCircle` unwraps longitudes past ±180 to keep the
+   * line continuous across the antimeridian, and a vertex at 181° is not
+   * somewhere you can put a marker. The hover handler has only the queried
+   * feature to go on, so the honest coordinates have to travel with it.
+   */
+  alon: number
+  alat: number
+  blon: number
+  blat: number
+}
 
 export function linksToGeoJSON(links: PlaceLink[]): FC<Line, LinkProps> {
   return {
@@ -178,7 +230,23 @@ export function linksToGeoJSON(links: PlaceLink[]): FC<Line, LinkProps> {
       geometry: { type: 'LineString', coordinates: greatCircle(l.alon, l.alat, l.blon, l.blat) },
       // Nesting links carry no track count and are all one weight, so they fall
       // through the width ramp at its floor.
-      properties: { a: l.a, b: l.b, tracks: l.tracks ?? 1 },
+      //
+      // `id` is the pair itself, which is already unique — the collab query
+      // yields each pair once, and a place is never its own parent. It exists so
+      // an arc can carry feature-state for hover and selection, the same way a
+      // dot does, and it is a *property* rather than a top-level feature id for
+      // the reason spelled out on the dots source: string ids do not survive the
+      // trip through the worker, so the source promotes this one instead.
+      properties: {
+        id: `${l.a}~${l.b}`,
+        a: l.a,
+        b: l.b,
+        tracks: l.tracks ?? 1,
+        alon: l.alon,
+        alat: l.alat,
+        blon: l.blon,
+        blat: l.blat,
+      },
     })),
   }
 }
