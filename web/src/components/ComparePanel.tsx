@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { api } from '../lib/api'
 import {
   friends as friendsApi,
   BAND_COPY,
@@ -58,6 +59,23 @@ export function ComparePanel({
   const fileInput = useRef<HTMLInputElement>(null)
 
   const list = useQuery({ queryKey: ['friends'], queryFn: friendsApi.list })
+  // The same query the app shell already made, read from the cache rather than
+  // asked again. `local` is what separates "there is a downloads bar" from "this
+  // is a window with no browser around it".
+  const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
+  const local = setup.data?.local ?? false
+
+  /** Where the last export landed, so the file is findable without a browser. */
+  const [saved, setSaved] = useState<string | null>(null)
+  const exportFile = useMutation({
+    mutationFn: friendsApi.exportToFile,
+    onMutate: () => {
+      setProblem(null)
+      setSaved(null)
+    },
+    onSuccess: ({ path }) => setSaved(path),
+    onError: (err: Error) => setProblem(err.message),
+  })
 
   const comparison = useQuery({
     queryKey: ['compare', openId],
@@ -135,11 +153,25 @@ export function ComparePanel({
           </p>
 
           <div className="share-actions">
-            {/* A real link, not a fetch: the browser downloads it without
-                unloading the app, and there is nothing for JavaScript to add. */}
-            <a className="primary" href={friendsApi.exportUrl()} download>
-              Export my library
-            </a>
+            {/* Two ways to hand over the same bytes, because the two builds hand
+                them over differently. A browser tab has a downloads bar and a
+                link is the honest control there. The downloaded app is a window
+                with no browser chrome at all: the file would save with nothing
+                on screen to say so, which reads as a button that does nothing.
+                There, the server writes it and the app says where it went. */}
+            {local ? (
+              <button
+                className="primary"
+                onClick={() => exportFile.mutate()}
+                disabled={exportFile.isPending}
+              >
+                {exportFile.isPending ? 'Saving…' : 'Export my library'}
+              </button>
+            ) : (
+              <a className="primary" href={friendsApi.exportUrl()} download>
+                Export my library
+              </a>
+            )}
             <button
               className="ghost"
               onClick={() => fileInput.current?.click()}
@@ -155,6 +187,15 @@ export function ComparePanel({
               hidden
             />
           </div>
+
+          {/* The path, in full and selectable. The window it is shown in cannot
+              open a folder, so the least it can do is let you copy where the
+              file is. */}
+          {saved && (
+            <p className="share-saved">
+              Saved to <code>{saved}</code>
+            </p>
+          )}
 
           {problem && <p className="share-problem">{problem}</p>}
 

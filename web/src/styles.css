@@ -886,6 +886,18 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 
 .share-note { color: var(--dim); font-size: 11px; line-height: 1.5; margin-top: 10px; }
 
+/* Where the export went. The path is the whole message, so it wraps rather than
+   ellipsising — a truncated path is not somewhere you can go and look. */
+.share-saved {
+  margin: 8px 0 0; padding: 7px 9px; border-radius: 6px;
+  background: rgba(29, 185, 84, .1); border: 1px solid rgba(29, 185, 84, .28);
+  color: var(--muted); font-size: 11.5px; line-height: 1.5;
+}
+.share-saved code {
+  display: block; margin-top: 3px; color: var(--text);
+  font-size: 11px; word-break: break-all; user-select: all;
+}
+
 /* A section heading and the switch for the section. The toggle sits on the
    heading line rather than above the list as a card, because what it governs is
    the list — the eyes in the rows are the per-library controls. */

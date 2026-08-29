@@ -4,7 +4,10 @@
 import './env.js';
 import { isLoopback } from './env.js';
 import http from 'node:http';
-import { openUserDb, hasFts, reindexArtist } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { openUserDb, hasFts, reindexArtist, DATA_DIR } from './db.js';
 import { runAsUser, currentDb, currentUserId } from './context.js';
 import {
   authStatus,
@@ -91,6 +94,54 @@ function placeTracks({ qid, iso }) {
      ORDER BY a.name COLLATE NOCASE, t.name COLLATE NOCASE`,
     qid ?? iso
   );
+}
+
+/**
+ * The library as a `.mappify` file, and the name it should have.
+ *
+ * Shared by the two routes that need it — one hands the bytes to the browser,
+ * the other writes them to disk — because they must produce the same file. Two
+ * copies of this would be two exports that could quietly drift apart.
+ */
+async function exportBytes() {
+  const userId = currentUserId();
+  // The display name is asked of Spotify rather than of the library, because the
+  // library does not hold one — and the avatar comes back null on any failure
+  // rather than costing somebody their export.
+  let displayName = userId;
+  try {
+    displayName = (await me())?.display_name || userId;
+  } catch {
+    // Offline, or the token has expired. The file is still worth writing.
+  }
+  const avatar = await fetchAvatarBytes();
+  const payload = buildExport({ spotifyId: userId, displayName, avatar });
+  return { bytes: encodeExport(payload), ascii: exportFilename(displayName) };
+}
+
+/**
+ * Write a file to the downloads folder, without ever landing on one that exists.
+ *
+ * Exporting twice in a day produces the same name twice, and silently replacing
+ * the first file would destroy something somebody may have already sent. The
+ * suffix is what the operating systems do themselves, for the same reason.
+ *
+ * Falls back to the data directory when there is no Downloads folder — a server
+ * account, or a machine where it has been moved — because a path that exists is
+ * worth more than the tidiest one.
+ */
+function writeToDownloads(name, bytes) {
+  const home = os.homedir();
+  const downloads = path.join(home, 'Downloads');
+  const dir = fs.existsSync(downloads) ? downloads : DATA_DIR;
+
+  const ext = path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  let file = path.join(dir, name);
+  for (let n = 2; fs.existsSync(file); n++) file = path.join(dir, `${stem} (${n})${ext}`);
+
+  fs.writeFileSync(file, bytes);
+  return file;
 }
 
 const routes = {
@@ -904,22 +955,28 @@ const routes = {
   // it emits the whole library in one GET, and a hosted instance binds
   // 0.0.0.0. Default-private is the only thing standing in front of it.
 
-  '/api/export': async () => {
-    const userId = currentUserId();
-    // The display name is asked of Spotify rather than of the library, because
-    // the library does not hold one — and the avatar comes back null on any
-    // failure rather than costing somebody their export.
-    let displayName = userId;
-    try {
-      displayName = (await me())?.display_name || userId;
-    } catch {
-      // Offline, or the token has expired. The file is still worth writing.
-    }
-    const avatar = await fetchAvatarBytes();
+  /**
+   * The file, written where the person running this can find it.
+   *
+   * A downloaded Mappify opens in a Chromium app window: no downloads bar, no
+   * bubble, no menu. `<a download>` there saves the file and says nothing, so
+   * the button reads as broken and the export reads as missing. Writing it
+   * ourselves and answering with the path is the only version of this that the
+   * app window can actually tell you about.
+   *
+   * Loopback only, for the reason /api/export is not public: this writes to the
+   * filesystem of the machine running the server, which on a hosted copy is not
+   * the machine of the person asking.
+   */
+  '/api/export-file': async () => {
+    if (!LOOPBACK) throw Object.assign(new Error('Not available on a hosted copy.'), { status: 400 });
+    const { bytes, ascii } = await exportBytes();
+    const path = writeToDownloads(ascii, bytes);
+    return { path };
+  },
 
-    const payload = buildExport({ spotifyId: userId, displayName, avatar });
-    const bytes = encodeExport(payload);
-    const ascii = exportFilename(displayName);
+  '/api/export': async () => {
+    const { bytes, ascii } = await exportBytes();
 
     return {
       $raw: {

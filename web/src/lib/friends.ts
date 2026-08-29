@@ -167,6 +167,15 @@ export const friends = {
    */
   avatarUrl: (id: number) => `/api/friend-avatar?id=${id}`,
 
+  /**
+   * Write the export to disk and answer with where it went.
+   *
+   * For the downloaded app, whose window has no downloads bar to show a saved
+   * file in — see `/api/export-file`. A hosted copy keeps `exportUrl` below,
+   * where the browser's own download UI is present and is the right thing.
+   */
+  exportToFile: () => json<{ path: string }>('/api/export-file', { method: 'POST' }),
+
   /** Downloads rather than navigates, so the app is not unloaded. */
   exportUrl: () => '/api/export',
 }
