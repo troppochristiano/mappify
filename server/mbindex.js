@@ -179,7 +179,20 @@ async function lookupByMbid(table, mbids) {
   return out;
 }
 
-export async function indexInfo() {
+/**
+ * Resolved once and reused for the life of the process.
+ *
+ * This describes a static index and cannot change while we run, but it is
+ * awaited inside /api/setup — the one request the whole app is held behind,
+ * including the player. On the remote backend that was a cold TLS connection
+ * and a query standing between launch and anything being on screen.
+ */
+let infoPromise = null;
+export function indexInfo() {
+  return (infoPromise ??= readIndexInfo());
+}
+
+async function readIndexInfo() {
   const b = await resolveBackend();
   if (!b) return null;
   const rows = await b.query('SELECT key, value FROM meta', []);

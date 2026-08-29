@@ -18,6 +18,22 @@ import '../server/env.js';
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 const DIST = path.join(ROOT, 'web', 'dist');
 const PORT = Number(process.env.MAPPIFY_PORT ?? 6942);
+
+/**
+ * How big the app window opens.
+ *
+ * A hint, not a setting: Chrome remembers the bounds of an app window per app
+ * URL, so anyone who has opened Mappify before keeps whatever size they last
+ * had, and this decides the first launch on a profile. Oversizing is safe —
+ * the window is clamped to the work area, so this opens as large as it fits on
+ * a laptop rather than hanging off the screen.
+ *
+ * It reaches every platform: the Windows shortcut, Mappify.command and
+ * Mappify.desktop all start this file. The no-Chromium fallback further down
+ * cannot be sized at all — it hands the URL to whatever browser is default and
+ * gets an ordinary tab.
+ */
+const WINDOW_SIZE = '1600,1000';
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const run = (cmd, args, cwd) => {
@@ -110,7 +126,7 @@ const openBrowser = () => {
   const app = findAppBrowser();
   try {
     if (app) {
-      spawn(app, [`--app=${url}`, '--window-size=1280,820'], {
+      spawn(app, [`--app=${url}`, `--window-size=${WINDOW_SIZE}`], {
         detached: true,
         stdio: 'ignore',
       }).unref();

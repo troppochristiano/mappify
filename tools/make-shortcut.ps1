@@ -1,0 +1,84 @@
+# Writes the shortcut that Windows users double-click.
+#
+# It replaces a compiled launcher, which is why the relative path matters: a .lnk
+# records where its target was when it was made — a path on a CI runner — and the
+# person who unzips it has it somewhere else entirely. Setting the relative path
+# as well gives the shell the fallback it repairs both the target and the working
+# directory from, so the same file works wherever the folder lands.
+#
+# WScript.Shell cannot write that half, so this drives IShellLinkW directly. The
+# COM work is all in C# because PowerShell's cast operator does not
+# QueryInterface, and the coclass has to be cast where the compiler can do it.
+param(
+  [Parameter(Mandatory)][string]$Lnk,
+  [Parameter(Mandatory)][string]$Target,
+  [string]$Arguments = '',
+  [string]$WorkDir = '',
+  [string]$Description = '',
+  [int]$ShowCmd = 1
+)
+$ErrorActionPreference = 'Stop'
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+public class ShellLinkObj { }
+
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IShellLinkW {
+  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder f, int cch, IntPtr pfd, uint flags);
+  void GetIDList(out IntPtr ppidl);
+  void SetIDList(IntPtr pidl);
+  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder n, int cch);
+  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string n);
+  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder d, int cch);
+  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string d);
+  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder a, int cch);
+  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string a);
+  void GetHotkey(out short k);
+  void SetHotkey(short k);
+  void GetShowCmd(out int c);
+  void SetShowCmd(int c);
+  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder p, int cch, out int i);
+  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string p, int i);
+  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string rel, uint reserved);
+  void Resolve(IntPtr hwnd, uint flags);
+  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string f);
+}
+
+[ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IPersistFile {
+  void GetClassID(out Guid id);
+  [PreserveSig] int IsDirty();
+  void Load([MarshalAs(UnmanagedType.LPWStr)] string f, uint mode);
+  void Save([MarshalAs(UnmanagedType.LPWStr)] string f, [MarshalAs(UnmanagedType.Bool)] bool remember);
+  void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string f);
+  void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string f);
+}
+
+public static class Shortcut {
+  public static void Create(string lnk, string target, string args, string workDir, string desc, int showCmd) {
+    var obj = new ShellLinkObj();
+    var link = (IShellLinkW)obj;
+    link.SetPath(target);
+    if (!string.IsNullOrEmpty(args)) link.SetArguments(args);
+    if (!string.IsNullOrEmpty(workDir)) link.SetWorkingDirectory(workDir);
+    if (!string.IsNullOrEmpty(desc)) link.SetDescription(desc);
+    link.SetShowCmd(showCmd);
+    link.SetIconLocation(target, 0);
+    // The whole point: the shell falls back to this when the absolute path is
+    // gone, which it always is once the zip has been unpacked somewhere else.
+    link.SetRelativePath(lnk, 0);
+    ((IPersistFile)obj).Save(lnk, true);
+  }
+}
+'@
+
+$lnkPath = [System.IO.Path]::GetFullPath($Lnk)
+$targetPath = [System.IO.Path]::GetFullPath($Target)
+$dir = if ($WorkDir) { [System.IO.Path]::GetFullPath($WorkDir) } else { '' }
+[Shortcut]::Create($lnkPath, $targetPath, $Arguments, $dir, $Description, $ShowCmd)
+"wrote $lnkPath"

@@ -100,6 +100,22 @@ const UNIFORM_R = 4.5
  * green through gold.
  */
 export const FRIEND_COLOUR = '#f0a726'
+
+/**
+ * The hues an imported library can be given, and the ones they are given.
+ *
+ * A short list rather than a picker. The only real requirement is "not the
+ * accent green and not white", since those already mean *your library* and *the
+ * one you mean* — and five hues spread far enough apart to tell two libraries
+ * apart at a glance beats a wheel that lets you choose a green three shades off
+ * the one underneath it.
+ *
+ * Here rather than in the panel that draws the swatches, because the default a
+ * library takes is a fact about the overlay: the route picks one from this list
+ * per library so that two of them differ before anybody chooses anything.
+ */
+export const FRIEND_COLOURS = ['#f0a726', '#e0508a', '#8b7cf0', '#33c4d8', '#e8543f']
+
 const FRIEND_R = 1.6
 
 const state = (key: string): ExpressionSpecification => [
@@ -165,24 +181,90 @@ function rampStops(alpha: number): ExpressionSpecification {
  * their largest.
  */
 const FILL_Z = 2.2
+
+/**
+ * The radius at one zoom stop, for one set of dots.
+ *
+ * Extracted because the friend ring is defined relative to your dot, and two
+ * copies of this arithmetic would be two things to keep in step. `prop` is which
+ * feature property carries the magnitude: `size` is the feature's own, `mine` is
+ * your dot's at the same place.
+ */
+const grow = (
+  mode: DotMode,
+  k: number,
+  factor: number,
+  prop: 'size' | 'mine',
+  /** Flat pixels added after the curve — see FRIEND_GAP. */
+  gap = 0
+): ExpressionSpecification =>
+  mode === 'colour'
+    ? ['literal', UNIFORM_R * Math.min(1.6, k) * factor + gap]
+    : ['+', 2 * factor + gap, ['*', ['get', prop], 16 * k * factor]]
+
+/** The four zoom stops every radius curve here is drawn on. */
+const atZoom = (
+  stop: (k: number) => ExpressionSpecification
+): DataDrivenPropertyValueSpecification<number> =>
+  [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    FILL_Z, stop(1.0),
+    FILL_Z + 1, stop(1.25),
+    FILL_Z + 2.2, stop(1.9),
+    22, stop(1.9),
+  ] as DataDrivenPropertyValueSpecification<number>
+
 export function circleRadius(
   mode: DotMode,
   /** Scales the whole curve — the friend ring sits outside your dot. */
   factor = 1
 ): DataDrivenPropertyValueSpecification<number> {
-  const grow = (k: number): ExpressionSpecification =>
-    mode === 'colour'
-      ? ['literal', UNIFORM_R * Math.min(1.6, k) * factor]
-      : ['+', 2 * factor, ['*', ['get', 'size'], 16 * k * factor]]
-  return [
-    'interpolate',
-    ['linear'],
-    ['zoom'],
-    FILL_Z, grow(1.0),
-    FILL_Z + 1, grow(1.25),
-    FILL_Z + 2.2, grow(1.9),
-    22, grow(1.9),
-  ] as DataDrivenPropertyValueSpecification<number>
+  return atZoom((k) => grow(mode, k, factor, 'size'))
+}
+
+/**
+ * The clearance a friend's ring keeps outside your dot at a shared place.
+ *
+ * Flat pixels rather than a multiple, because a multiple scales the gap with the
+ * dot and the dots are 2.6px across for a one-track place: 1.45× left less than
+ * half a pixel of air, and none at all once the dot's own stroke widens to 1.6
+ * on hover. Three is that widest stroke plus enough to read as a gap.
+ */
+const FRIEND_GAP = 3
+
+/**
+ * A friend's ring: their magnitude, but never drawn inside your dot.
+ *
+ * Two things are wrong with sizing it on their track count alone. It ignored the
+ * dot mode entirely — in colour mode your dots are a uniform disc and the ring
+ * stayed on the size curve, so it collapsed underneath them and the overlay
+ * simply vanished. And at a shared place their count says nothing about how big
+ * *your* dot is, so a city where you have two hundred tracks and they have two
+ * drew their ring deep inside your dot.
+ *
+ * So: their curve, floored at yours plus a gap, and only where `mine` says you
+ * have the place at all. The floor bites exactly in the range where the honest
+ * radius could not be seen, and everywhere above it the ring still means how
+ * much they have there.
+ *
+ * The floor has to be built into each stop rather than wrapped around the
+ * finished curve. `['+', circleRadius(mode), FRIEND_GAP]` is the obvious way and
+ * an invalid style: a `zoom` expression may only be the input of a top-level
+ * `interpolate`, so it cannot sit inside arithmetic.
+ */
+export function friendRadius(mode: DotMode): DataDrivenPropertyValueSpecification<number> {
+  return atZoom((k) => {
+    const theirs = grow(mode, k, FRIEND_R, 'size')
+    const yoursPlusGap = grow(mode, k, 1, 'mine', FRIEND_GAP)
+    return [
+      'case',
+      ['>', ['number', ['get', 'mine'], 0], 0],
+      ['max', theirs, yoursPlusGap],
+      theirs,
+    ] as ExpressionSpecification
+  })
 }
 
 /**
@@ -786,9 +868,9 @@ export function linkEndPaint() {
   }
 }
 
-export function friendPaint(colour: string) {
+export function friendPaint(colour: string, mode: DotMode = 'size') {
   return {
-    'circle-radius': circleRadius('size', FRIEND_R),
+    'circle-radius': friendRadius(mode),
     'circle-color': 'rgba(0,0,0,0)',
     'circle-stroke-color': colour,
     'circle-stroke-width': 1.4,
@@ -807,6 +889,12 @@ export function applyDotMode(map: Map, mode: DotMode) {
   map.setPaintProperty(LAYER.dots, 'circle-radius', circleRadius(mode))
   map.setPaintProperty(LAYER.dots, 'circle-color', circleColor(mode))
   map.setPaintProperty(LAYER.dots, 'circle-stroke-color', circleStrokeColor(mode))
+  // The rings too, or they keep the size curve while your dots go uniform and
+  // the whole overlay disappears under them. Their own guard, not the one above:
+  // the friend layer is the one that can be missing.
+  if (map.getLayer(LAYER.friendDots)) {
+    map.setPaintProperty(LAYER.friendDots, 'circle-radius', friendRadius(mode))
+  }
 }
 
 /**

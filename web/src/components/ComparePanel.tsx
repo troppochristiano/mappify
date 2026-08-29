@@ -9,6 +9,10 @@ import {
   type Friend,
 } from '../lib/friends'
 import { WrappedCard } from './WrappedCard'
+import { OverlayEye } from './OverlayEye'
+// The palette lives with the overlay's other colour facts, because the route
+// picks a default from it per library.
+import { FRIEND_COLOURS } from './globe/layers'
 
 /**
  * Share your library, and see how it lines up with somebody else's.
@@ -24,7 +28,7 @@ export function ComparePanel({
   onSelectFriend,
   visible,
   onVisible,
-  colour,
+  colourOf,
   onColour,
 }: {
   /** Lifted so the globe can overlay this friend's places. */
@@ -32,10 +36,22 @@ export function ComparePanel({
   onSelectFriend: (id: number | null) => void
   visible: boolean
   onVisible: (v: boolean) => void
-  colour: string
-  onColour: (c: string) => void
+  /** Each library's own hue — see the colours map in the route. */
+  colourOf: (id: number) => string
+  onColour: (id: number, colour: string) => void
 }) {
   const qc = useQueryClient()
+  /**
+   * The library being *read*, which is not the same thing as the one being
+   * *drawn*.
+   *
+   * `selectedFriend` is the overlay: it belongs to the route, it survives this
+   * panel, and it is now remembered between launches. This is the comparison you
+   * opened, and it belongs to the panel — which is why it is plain state and
+   * needs no resetting. Leaving the tab unmounts the panel, so coming back lands
+   * on the list of libraries rather than back inside whichever one you last read.
+   */
+  const [openId, setOpenId] = useState<number | null>(null)
   const [step, setStep] = useState(0)
   const [card, setCard] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
@@ -44,9 +60,9 @@ export function ComparePanel({
   const list = useQuery({ queryKey: ['friends'], queryFn: friendsApi.list })
 
   const comparison = useQuery({
-    queryKey: ['compare', selectedFriend],
-    queryFn: () => friendsApi.compare(selectedFriend!),
-    enabled: selectedFriend != null,
+    queryKey: ['compare', openId],
+    queryFn: () => friendsApi.compare(openId!),
+    enabled: openId != null,
   })
 
   const importFile = useMutation({
@@ -61,6 +77,7 @@ export function ComparePanel({
         setProblem(`Imported, but ${skipped} row${skipped === 1 ? '' : 's'} could not be read.`)
       }
       onSelectFriend(friend.id)
+      setOpenId(friend.id)
       setStep(0)
     },
     onError: (err: Error) => setProblem(err.message),
@@ -68,9 +85,13 @@ export function ComparePanel({
 
   const remove = useMutation({
     mutationFn: friendsApi.remove,
-    onSuccess: () => {
+    // Told which one went, rather than clearing both regardless: deleting a
+    // library you are not looking at used to take the overlay off the globe with
+    // it, and the overlay might have been a different library entirely.
+    onSuccess: (_, id) => {
       qc.invalidateQueries({ queryKey: ['friends'] })
-      onSelectFriend(null)
+      if (id === selectedFriend) onSelectFriend(null)
+      if (id === openId) setOpenId(null)
     },
   })
 
@@ -90,10 +111,14 @@ export function ComparePanel({
       {/* Compare's own back, kept in the body rather than promoted to the dock
           head. The dock's back leaves a pushed view; this one steps out of one
           friend and into the list of them. Two different acts, so two different
-          buttons, and the one that belongs to this panel stays in it. */}
-      {selectedFriend != null && (
+          buttons, and the one that belongs to this panel stays in it.
+
+          It leaves the comparison without taking the rings off the globe: which
+          library you are reading and which one is drawn are two questions, and
+          answering the first should not silently answer the second. */}
+      {openId != null && (
         <div className="dock-subhead">
-          <button className="ghost back" onClick={() => onSelectFriend(null)}>
+          <button className="ghost back" onClick={() => setOpenId(null)}>
             ← all
           </button>
           <h2 className="dock-subtitle" style={{ margin: 0 }}>
@@ -102,7 +127,7 @@ export function ComparePanel({
         </div>
       )}
 
-      {selectedFriend == null ? (
+      {openId == null ? (
         <>
           <p className="panel-sub">
             Send someone your library as a file, or open one they sent you. Nothing
@@ -133,16 +158,50 @@ export function ComparePanel({
 
           {problem && <p className="share-problem">{problem}</p>}
 
-          <h2>Imported libraries</h2>
+          {/* The switch for the whole overlay, on the heading it governs. The
+              eyes down the list are about one library each; this one is about
+              whether any of them is drawn at all, which is why it sits here and
+              says so rather than naming a friend.
+
+              Absent with nothing selected: there would be no rings for it to
+              act on, and a control that cannot do anything is furniture. */}
+          <div className="list-head">
+            <h2>Imported libraries</h2>
+            {selectedFriend != null && (
+              <button
+                className="ghost pill-sm"
+                aria-pressed={visible}
+                aria-label="Show imported libraries on the globe"
+                onClick={() => onVisible(!visible)}
+              >
+                {visible ? 'Showing on the globe' : 'Hidden from the globe'}
+              </button>
+            )}
+          </div>
           {list.data?.friends.length ? (
             <ul className="friend-list">
               {list.data.friends.map((f) => (
                 <FriendRow
                   key={f.id}
                   friend={f}
+                  // Drawn, and actually showing, are two different things: a
+                  // library can be the selected one with its rings turned off.
+                  overlaid={f.id === selectedFriend}
+                  visible={f.id === selectedFriend && visible}
+                  colour={colourOf(f.id)}
                   onOpen={() => {
+                    setOpenId(f.id)
                     onSelectFriend(f.id)
                     setStep(0)
+                  }}
+                  // One click does both jobs, because there is one overlay slot:
+                  // the library already in it toggles, and any other takes it.
+                  onEye={() => {
+                    if (f.id === selectedFriend) onVisible(!visible)
+                    else {
+                      onSelectFriend(f.id)
+                      onVisible(true)
+                    }
                   }}
                   onRemove={() => remove.mutate(f.id)}
                 />
@@ -166,17 +225,23 @@ export function ComparePanel({
         <p className="share-problem">{String((comparison.error as Error).message)}</p>
       ) : report && friend ? (
         <>
+          {/* The colour belongs here and only here: it is a choice about *this*
+              library, and the list is a list of several. */}
           <OverlayControls
             friend={friend}
             visible={visible}
             onVisible={onVisible}
-            colour={colour}
-            onColour={onColour}
+            colour={colourOf(friend.id)}
+            onColour={(c) => onColour(friend.id, c)}
           />
-          <Sequence report={report} friend={friend} step={step} onStep={setStep} />
-          <button className="primary share-card-open" onClick={() => setCard(true)}>
-            Open the card
+          {/* Above the sequence rather than after it. The card is the thing
+              people came here to send, and it was sitting below four steps of
+              reading — so you had to scroll past the whole comparison to find
+              the one control that gets you out of it. */}
+          <button className="primary share-card-open" onClick={() => setCard((c) => !c)}>
+            {card ? 'Close the card' : 'Open the card'}
           </button>
+          <Sequence report={report} friend={friend} step={step} onStep={setStep} />
           {/* Portalled out of the dock: the card is a draggable window with a
               420px minimum, and the dock body is a 360px scroll container that
               would both clip it and be the containing block its dragging is
@@ -194,15 +259,25 @@ export function ComparePanel({
 
 function FriendRow({
   friend,
+  overlaid,
+  visible,
+  colour,
   onOpen,
+  onEye,
   onRemove,
 }: {
   friend: Friend
+  /** Whether this is the library currently drawn on the globe. */
+  overlaid: boolean
+  /** And whether its rings are actually showing. */
+  visible: boolean
+  colour: string
   onOpen: () => void
+  onEye: () => void
   onRemove: () => void
 }) {
   return (
-    <li className="friend-row">
+    <li className={`friend-row${overlaid ? ' friend-row--on' : ''}`}>
       <button className="friend-open" onClick={onOpen}>
         <Avatar friend={friend} size={34} />
         <span className="friend-text">
@@ -212,14 +287,29 @@ function FriendRow({
           </em>
         </span>
       </button>
-      <button
-        className="friend-remove"
-        onClick={onRemove}
-        aria-label={`Remove ${friend.display_name}`}
-        title="Remove"
-      >
-        ×
-      </button>
+      {/* Both controls in one group, on one baseline. They used to be a bare
+          11px dot and a 16px glyph sitting next to each other on different
+          metrics, which is what stopped them reading as a pair. */}
+      <span className="friend-acts">
+        <OverlayEye
+          visible={visible}
+          colour={colour}
+          label={
+            visible
+              ? `Hide ${friend.display_name}'s places on the globe`
+              : `Show ${friend.display_name}'s places on the globe`
+          }
+          onClick={onEye}
+        />
+        <button
+          className="friend-remove"
+          onClick={onRemove}
+          aria-label={`Remove ${friend.display_name}`}
+          title="Remove"
+        >
+          ×
+        </button>
+      </span>
     </li>
   )
 }
@@ -252,16 +342,6 @@ function Avatar({ friend, size }: { friend: Friend; size: number }) {
   )
 }
 
-/**
- * A short list rather than a full colour wheel.
- *
- * The only real requirement is "not the accent green and not white", since those
- * two already mean *your library* and *the one you mean*. Five hues that clear
- * both, spread far enough apart to tell two friends apart at a glance, beats a
- * picker that lets you choose a green three shades off the one underneath it.
- */
-const FRIEND_COLOURS = ['#f0a726', '#e0508a', '#8b7cf0', '#33c4d8', '#e8543f']
-
 function OverlayControls({
   friend,
   visible,
@@ -277,13 +357,16 @@ function OverlayControls({
 }) {
   return (
     <div className="overlay-controls">
+      {/* The label says what pressing it does to the rings, not merely where
+          they are. "On the globe" was a true sentence that read as a status,
+          which is exactly how a control gets mistaken for a caption. */}
       <button
         className="ghost overlay-toggle"
         aria-pressed={visible}
         onClick={() => onVisible(!visible)}
       >
         <span className="overlay-swatch" style={{ color: colour }} aria-hidden="true" />
-        {visible ? 'On the globe' : 'Hidden'}
+        {visible ? 'Showing on the globe' : 'Hidden from the globe'}
       </button>
       <div className="overlay-colours" role="group" aria-label="Overlay colour">
         {FRIEND_COLOURS.map((c) => (

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { api, type CollabTrack, type PlaceTrack } from '../lib/api'
+import { PlayIcon } from './icons'
 
 /**
  * What one thread between two cities is actually made of.
@@ -83,7 +84,7 @@ export function CollabPanel({ a, b, onOpenArtist, onPlay, nowPlayingUri }: Props
                             })
                           }
                         >
-                          ▶
+                          <PlayIcon />
                         </button>
                       )}
                     </div>

@@ -18,10 +18,11 @@ import { PlaylistBuilder } from '../components/PlaylistBuilder'
 import { TunedReadout } from '../components/TunedReadout'
 import { SearchPanel } from '../components/SearchPanel'
 import { ComparePanel } from '../components/ComparePanel'
+import { OverlayEye } from '../components/OverlayEye'
 import { CollabPanel } from '../components/CollabPanel'
 import { Dock, type DockTab } from '../components/Dock'
 import { friends as friendsApi } from '../lib/friends'
-import { FRIEND_COLOUR } from '../components/globe/layers'
+import { FRIEND_COLOUR, FRIEND_COLOURS } from '../components/globe/layers'
 import { useFilters, serialiseChips, rememberLabels, labelsQuery } from '../lib/filters'
 import { useHotkeys } from '../lib/useHotkeys'
 import { countryBox } from '../components/globe/countryBox'
@@ -86,6 +87,66 @@ const NO_ENDS: { lon: number; lat: number }[] = []
 const COLLABS_KEY = 'mappify.collabs'
 
 const AUTOPLAY_KEY = 'mappify.autoplay'
+
+/**
+ * The imported library that was loaded, and whether its rings were showing.
+ *
+ * In local storage rather than in the URL, for the reason the search scope is:
+ * this is a row id in *this* machine's database, and it would name something
+ * else — or nothing — in a link somebody else opened. The library itself has
+ * been on disk all along; only the choice of which one to draw was being
+ * forgotten every launch.
+ */
+const FRIEND_KEY = 'mappify.friend'
+const FRIEND_VISIBLE_KEY = 'mappify.friendVisible'
+
+const COLOURS_KEY = 'mappify.friendColours'
+
+/**
+ * The colour each imported library wears, migrating the single one this replaced.
+ *
+ * `mappify.friendColour` held one hue for the whole overlay. It was chosen while
+ * some particular library was loaded, and that library's id is remembered too —
+ * so the migration gives the colour back to the library it was actually about.
+ * Spreading it across every library would put a deliberate choice on ones it was
+ * never made for, and dropping it would lose it; this runs at most once per
+ * browser either way.
+ */
+function readFriendColours(): Record<string, string> {
+  let map: Record<string, string> = {}
+  try {
+    const raw = localStorage.getItem(COLOURS_KEY)
+    if (raw) map = JSON.parse(raw) ?? {}
+  } catch {
+    /* unparseable is the same as unset: the colours are a preference, and one
+       bad value must not be able to stop the app reading its own storage. */
+  }
+  const old = localStorage.getItem('mappify.friendColour')
+  if (old === null) return map
+  const was = readFriendId()
+  if (was != null && map[was] === undefined) {
+    map = { ...map, [was]: old }
+    // Written here rather than left to the effect that persists this state.
+    // StrictMode calls a state initialiser twice and keeps the *second* result:
+    // with the old key already removed by the first call, the second would find
+    // nothing to migrate and hand back a map without the colour — losing it on
+    // the single load that existed to keep it. Saving first makes the whole
+    // function idempotent, so a second run reads the migrated map straight back.
+    localStorage.setItem(COLOURS_KEY, JSON.stringify(map))
+  }
+  localStorage.removeItem('mappify.friendColour')
+  return map
+}
+
+/** The remembered library, if the stored value still looks like a row id. */
+function readFriendId(): number | null {
+  const raw = localStorage.getItem(FRIEND_KEY)
+  if (raw === null) return null
+  const id = Number(raw)
+  // Guarded rather than trusted: anything else in there would otherwise be sent
+  // to the API as NaN, which is a request for a friend that cannot exist.
+  return Number.isInteger(id) && id > 0 ? id : null
+}
 
 /** How long the loader takes to fade out. Mirrors `.globe-loading--gone`. */
 const LOADER_FADE = 320
@@ -233,10 +294,22 @@ export function Home() {
    * a selection that vanished every time the panel closed would take that
    * overlay with it.
    */
-  const [friendId, setFriendId] = useState<number | null>(null)
+  const [friendId, setFriendId] = useState<number | null>(readFriendId)
+  useEffect(() => {
+    // Removed rather than written as null, so a stale id cannot outlive the
+    // selection it described — which is also what the error effect below relies
+    // on to forget a library that has since been deleted.
+    if (friendId == null) localStorage.removeItem(FRIEND_KEY)
+    else localStorage.setItem(FRIEND_KEY, String(friendId))
+  }, [friendId])
 
   /** Their rings on or off, without forgetting which library is loaded. */
-  const [friendVisible, setFriendVisible] = useState(true)
+  const [friendVisible, setFriendVisible] = useState<boolean>(
+    () => localStorage.getItem(FRIEND_VISIBLE_KEY) !== '0'
+  )
+  useEffect(() => {
+    localStorage.setItem(FRIEND_VISIBLE_KEY, friendVisible ? '1' : '0')
+  }, [friendVisible])
 
   /**
    * Which library the search sheet looks in.
@@ -248,21 +321,48 @@ export function Home() {
    */
   const [searchScope, setSearchScope] = useState<SearchScope>('mine')
 
-  // Persisted like dotMode and linkMode: which hue reads best against the green
-  // depends on the library, and comparing two friends is easier when each keeps
-  // the colour you gave them.
-  const [friendColour, setFriendColour] = useState(
-    () => localStorage.getItem('mappify.friendColour') || FRIEND_COLOUR
-  )
+  /**
+   * A hue per imported library, rather than one for all of them.
+   *
+   * It used to be a single string, which quietly meant "the overlay colour" —
+   * fine while one library was ever loaded, and wrong the moment there are
+   * several: giving one of them a colour gave it to all of them, so the control
+   * could not mean what it said.
+   */
+  const [friendColours, setFriendColours] = useState<Record<string, string>>(readFriendColours)
   useEffect(() => {
-    localStorage.setItem('mappify.friendColour', friendColour)
-  }, [friendColour])
+    localStorage.setItem(COLOURS_KEY, JSON.stringify(friendColours))
+  }, [friendColours])
+
+  const colourOf = useCallback(
+    (id: number) =>
+      // Defaulted from the palette by id, so two libraries differ before anyone
+      // has chosen anything — which is the whole reason the colour is per
+      // library. Stable, because the id is.
+      friendColours[id] ?? FRIEND_COLOURS[id % FRIEND_COLOURS.length],
+    [friendColours]
+  )
+  const setColour = useCallback(
+    (id: number, colour: string) => setFriendColours((m) => ({ ...m, [id]: colour })),
+    []
+  )
+
+  /** What the globe is actually drawing with: the loaded library's own hue. */
+  const friendColour = friendId == null ? FRIEND_COLOUR : colourOf(friendId)
 
   const friendMap = useQuery({
     queryKey: ['friend-points', friendId],
     queryFn: () => friendsApi.one(friendId!),
     enabled: friendId != null,
   })
+
+  // A remembered library that is not there any more. /api/friend answers "no
+  // such friend" for an id that has been deleted, and without this the app would
+  // come back holding it: no overlay, no explanation, and the compare tab
+  // offering a detail view of something that is gone.
+  useEffect(() => {
+    if (friendMap.isError) setFriendId(null)
+  }, [friendMap.isError])
 
   const friendPoints = useMemo(() => {
     if (!friendVisible || friendId == null) return undefined
@@ -444,6 +544,9 @@ export function Home() {
     queryKey: ['place-track', selectedQid],
     queryFn: () => api.placeTrack(selectedQid!),
     enabled: Boolean(selectedQid),
+    // The previous place's track rather than undefined while the next one is in
+    // flight, so `source` below never dips to null between two real tracks.
+    placeholderData: keepPreviousData,
   })
 
   // A track picked by hand (an artist or a song in the results) wins over the
@@ -844,11 +947,9 @@ export function Home() {
         : 'Places'
       : tab === 'search'
         ? 'Search'
-        : tab === 'library'
-          ? 'Your library'
-          : tab === 'compare'
-            ? 'Compare'
-            : 'Options'
+        : tab === 'compare'
+          ? 'Compare'
+          : 'Options'
 
   const dockBody = pushed ? (
     pushed.kind === 'artist' ? (
@@ -903,22 +1004,21 @@ export function Home() {
       scope={searchScope}
       onScope={setSearchScope}
     />
-  ) : tab === 'library' ? (
-    <SetupPanel />
   ) : tab === 'compare' ? (
     <ComparePanel
       selectedFriend={friendId}
       onSelectFriend={setFriendId}
       visible={friendVisible}
       onVisible={setFriendVisible}
-      colour={friendColour}
-      onColour={setFriendColour}
+      colourOf={colourOf}
+      onColour={setColour}
     />
   ) : tab === 'options' ? (
-    /* How the globe draws itself. Not destinations like the other tabs, but they
-       were the two widest things on the old toolbar and they are settings you
-       change once and leave — which is exactly what a tab you have to open is
-       for. */
+    /* How the globe draws itself, and what it draws from. Not destinations like
+       the other tabs — these are the things you set once and leave, which is
+       exactly what a tab you have to open is for. Connect and import used to be
+       a tab of their own next to this one; they are the same kind of visit, and
+       one page saves guessing which of the two owned re-importing. */
     <div className="dock-options">
       <section>
         <h2>Dots</h2>
@@ -987,6 +1087,10 @@ export function Home() {
           </div>
         </dl>
       </section>
+      {/* Directly under the counts, so the summary the last import printed reads
+          as the run that produced them rather than as a second, disagreeing set
+          of numbers. */}
+      <SetupPanel />
     </div>
   ) : (
     /* One view for browsing and for a selected place. A dot click and a walk
@@ -1013,18 +1117,38 @@ export function Home() {
         ) : null
       }
       actions={
-        // Any selection that resolves to tracks can become a playlist — a whole
-        // country as readily as one city. It sits above the artists so it is
-        // reachable without scrolling past 200 rows.
-        hasFilter && (selectedQid || isoFilter) ? (
-          <button
-            className="primary"
-            style={{ marginBottom: 14 }}
-            onClick={() => push({ kind: 'playlist' })}
-          >
-            Make a {filterLabel} playlist
-          </button>
-        ) : null
+        <>
+          {/* The rings are a property of the globe, and this is the tab you are
+              on while looking at it — so the switch for them lives here too,
+              rather than only in the panel you had to visit to turn them on. */}
+          {friendMap.data?.friend && (
+            <div className="overlay-mini">
+              <OverlayEye
+                visible={friendVisible}
+                colour={friendColour}
+                label={
+                  friendVisible
+                    ? `Hide ${friendMap.data.friend.display_name}'s places on the globe`
+                    : `Show ${friendMap.data.friend.display_name}'s places on the globe`
+                }
+                onClick={() => setFriendVisible(!friendVisible)}
+              />
+              <span>{friendMap.data.friend.display_name}</span>
+            </div>
+          )}
+          {/* Any selection that resolves to tracks can become a playlist — a
+              whole country as readily as one city. It sits above the artists so
+              it is reachable without scrolling past 200 rows. */}
+          {hasFilter && (selectedQid || isoFilter) ? (
+            <button
+              className="primary"
+              style={{ marginBottom: 14 }}
+              onClick={() => push({ kind: 'playlist' })}
+            >
+              Make a {filterLabel} playlist
+            </button>
+          ) : null}
+        </>
       }
       body={
         hasFilter ? (

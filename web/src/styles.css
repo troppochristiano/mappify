@@ -268,7 +268,7 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 
 /* Head, scrolling body, tab bar. The body is the only part that grows, so the
    card is as tall as its content up to the stack's cap and no taller — which is
-   what makes a two-row options tab a small card and a two-hundred-artist place
+   what makes a search with two hits a small card and a two-hundred-artist place
    a full one, without either being told a height. */
 .dock {
   display: flex; flex-direction: column; min-height: 0;
@@ -305,14 +305,30 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
   flex: 1 1 auto; min-width: 0; margin: 0; font-size: 15px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dock-back { flex: 0 0 auto; padding: 3px 9px; font-size: 11px; }
+/* Sized by the icon rather than by a font size, now that there is no text in
+   it: the pill is the icon plus its padding, and stays the same pill whatever
+   the surrounding type does. */
+/* Centred both ways rather than just laid out: the touch-target rule below
+   gives .ghost a min-height on a narrow window, and a flex child of a fixed
+   size in a box taller than it needs sits at the top of it — which put the
+   arrow 2px high on exactly the screens where the button is biggest. */
+.dock-back {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  padding: 4px 10px;
+}
+.dock-back svg { display: block; width: 14px; height: 14px; }
 
 /* An explicit height rather than `flex: 1 1 auto`, which is what makes the
    sheet draggable and what stops it flinching: `auto` cannot be animated, and
    a card sized by its content shrinks and springs back every time a list inside
    it spends a moment loading. Dock.tsx sets --dock-body-h. */
+/* Shrinkable, though its height is set: the card is what flex squeezes when the
+   column runs out of room, and everything in the card except this refuses to
+   give — so without `1` here the squeeze came off the bottom of the card and
+   took the tab bar with it. The body is the part that already scrolls, so it is
+   the part that can afford to be shorter than it asked for. */
 .dock-body {
-  flex: 0 0 auto; height: var(--dock-body-h, 0px);
+  flex: 0 1 auto; height: var(--dock-body-h, 0px);
   min-height: 0; overflow: auto; overscroll-behavior: contain;
   padding: 0 12px 12px;
 }
@@ -352,7 +368,7 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 .dock-tab-icon { position: relative; display: block; }
 .dock-tab-icon svg { display: block; width: 20px; height: 20px; }
 /* On the icon rather than after the label: a count is a mark on the thing, and
-   trailing the word would make one tab wider than its four neighbours.
+   trailing the word would make one tab wider than its three neighbours.
 
    Filled, not outlined. It overlaps the icon and sits over the map beyond it, so
    it has to carry its own background — and since it says the globe is filtered,
@@ -368,16 +384,16 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 
 /* A rule above the selected tab rather than a filled pill: the bar is the foot
    of a card, and a pill down there reads as a button you have pressed instead
-   of as the section you are in. One marker that moves, rather than five that
+   of as the section you are in. One marker that moves, rather than four that
    blink in and out — an exact 1/n of the bar, so it travels in whole multiples
    of itself and never has to be measured. */
 .dock-tab-marker {
   position: absolute; top: 0; left: 0; height: 2px; pointer-events: none;
-  width: calc(100% / var(--dock-tab-n, 5));
+  width: calc(100% / var(--dock-tab-n, 4));
   transform: translateX(calc(var(--dock-tab-i, 0) * 100%));
   transition: transform .22s cubic-bezier(.32, .72, 0, 1);
 }
-/* The inset lives on the pseudo so the box itself can stay an exact fifth. */
+/* The inset lives on the pseudo so the box itself can stay an exact quarter. */
 .dock-tab-marker::after {
   content: ''; position: absolute; inset: 0 12px;
   background: var(--accent); border-radius: 0 0 2px 2px;
@@ -497,6 +513,9 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
   color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
 }
+/* Block, so the mark is a box in a centred box rather than a line of text
+   sitting on a baseline — see the note in icons.tsx. */
+.round-btn svg { display: block; width: 13px; height: 13px; }
 .round-btn:hover { border-color: var(--text); color: var(--text); transform: scale(1.08); }
 .round-btn.play:hover { background: var(--accent); border-color: var(--accent); color: #000; }
 
@@ -697,9 +716,11 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 
 /* Back belongs with the trail it acts on, not in the header beside the close. */
 .crumb-back {
+  display: flex; align-items: center; justify-content: center;
   border: 1px solid #4a4a4a; border-radius: 999px;
-  padding: 1px 8px; margin-right: 4px; color: var(--text);
+  padding: 3px 8px; margin-right: 4px; color: var(--text);
 }
+.crumb-back svg { display: block; width: 13px; height: 13px; }
 .crumb-back:hover { border-color: var(--text); background: var(--surface-hi); }
 
 /* ---------- search ---------- */
@@ -756,8 +777,12 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
    wrapping onto a second line. Only the first is a computed-value change a CSS
    transition can see.
 
-   flow-root so the inner margins are contained: with them escaping, an empty
-   slot measured 12px instead of nothing.
+   The spacing is padding inside the measured element, never margin on it, and
+   that is the whole reason this row used to look sliced along the bottom:
+   `offsetHeight` counts padding and does not count margins, so margins here were
+   20px of chips hanging below a slot that had been told it was shorter than its
+   own contents. `:empty` is what keeps a slot with no chips at exactly nothing
+   rather than at a band of padding.
 
    Clipped with a margin rather than flush: the height is the point, but a chip
    arriving from scale(.9) and a focus ring around one both draw a few pixels
@@ -767,7 +792,8 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 .chips-slot { display: flow-root; overflow: clip; overflow-clip-margin: 8px; }
 .chips-slot--ready { transition: height .24s cubic-bezier(.32, .72, 0, 1); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips:not(:empty) { padding: 10px 0 12px; }
 
 /* The chip you just made arrives; the ones already there stay put. Keyed by
    target in FilterChips, so only the new element mounts and only it animates.
@@ -860,9 +886,28 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 
 .share-note { color: var(--dim); font-size: 11px; line-height: 1.5; margin-top: 10px; }
 
+/* A section heading and the switch for the section. The toggle sits on the
+   heading line rather than above the list as a card, because what it governs is
+   the list — the eyes in the rows are the per-library controls. */
+.list-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin-bottom: 10px;
+}
+.list-head h2 { margin: 0; }
+
+/* The ghost pill, sized to sit beside a heading without out-shouting it. */
+.pill-sm { padding: 3px 10px; font-size: 11px; flex: none; }
+
 .friend-list { list-style: none; margin: 0 0 4px; padding: 0; }
 .friend-row { display: flex; align-items: center; border-radius: 6px; }
 .friend-row:hover { background: var(--surface); }
+/* The one whose rings are on the globe. Quiet — it is a fact about the row, not
+   a selection you made in this list. */
+.friend-row--on { background: var(--surface); }
+/* The row's two controls, as a pair. Equal boxes on one baseline: they were a
+   bare 11px dot beside a 16px glyph with its own padding, which is why they did
+   not line up with each other or down the list. */
+.friend-acts { display: flex; align-items: center; gap: 2px; flex: none; padding-right: 4px; }
 .friend-open {
   flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0;
   background: transparent; border: 0; color: inherit; cursor: pointer;
@@ -872,10 +917,35 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 .friend-text b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friend-text em { font-style: normal; color: var(--dim); font-size: 11px; }
 .friend-remove {
-  background: transparent; border: 0; color: var(--dim); cursor: pointer;
-  font-size: 16px; line-height: 1; padding: 8px 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  background: transparent; border: 0; border-radius: 6px;
+  color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1;
 }
-.friend-remove:hover { color: #ffb4a8; }
+.friend-remove:hover { color: #ffb4a8; background: var(--surface-hi); }
+
+/* Show or hide an imported library's rings. Same box as the remove beside it,
+   so the two read as one set of row controls rather than as a mark and a
+   button. Colour is set inline, from the library's own overlay hue. */
+.eye {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0;
+  background: transparent; border: 0; border-radius: 6px;
+  color: var(--dim); cursor: pointer;
+}
+.eye svg { display: block; width: 17px; height: 17px; }
+.eye:hover { background: var(--surface-hi); }
+.eye[aria-pressed="false"]:hover { color: var(--muted); }
+.eye:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The same switch over the map, in the places tab. A line rather than a panel:
+   it says whose rings are on and lets you turn them off, and anything more
+   would be a second compare tab in the wrong place. */
+.overlay-mini {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 12px; color: var(--muted); font-size: 12px;
+}
+.overlay-mini span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .avatar {
   border-radius: 50%; object-fit: cover; flex: none;
@@ -938,17 +1008,32 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 .city-shared { background: rgba(29, 185, 84, .12); }
 .city-shared span { color: var(--accent-hi); }
 
-.share-card-open { width: 100%; margin-top: 16px; }
+/* Above the comparison rather than below it, so the button that sends the thing
+   is not behind four steps of reading it. */
+.share-card-open { width: 100%; margin: 2px 0 12px; }
 
 /* ---------- the shareable card ---------- */
 
 /* Still on purpose: what people do with this is take a picture of it, and half
    an animation in a screenshot is a card that looks broken. */
-.wrapped { padding: 4px 2px 12px; }
+/* The scroll container, and the padding.
+
+   `.win-body` is left generic — it is meant to host other windows later — so the
+   card carries its own overflow. Without it anywhere, a card taller than the
+   window was simply cut off: `.win` is `overflow: hidden`, and nothing in
+   between could scroll, so the foot of the card was unreachable at any size
+   below the content's own height. */
+.wrapped {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  padding: 14px 16px 16px;
+}
 .wrapped-heads { display: flex; justify-content: center; gap: 14px; margin-bottom: 10px; }
 .wrapped-score { text-align: center; }
+/* 52, not 64: in a 440px window the score was the only thing on its screenful,
+   and the four figures under it — which are the evidence for it — were below the
+   fold on first open. */
 .wrapped-score strong {
-  display: block; font-size: 64px; line-height: 1; font-weight: 800;
+  display: block; font-size: 52px; line-height: 1; font-weight: 800;
   letter-spacing: -.03em; color: var(--accent-hi); font-variant-numeric: tabular-nums;
 }
 .wrapped-score span { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }
@@ -1029,7 +1114,17 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 /* Which library the search sheet is looking in. Only present when there is a
    second one, so it never appears with two dead options. */
 .scope-modes { margin: 6px 0 2px; }
-.scope-modes button { flex: 1; }
+/* Smaller than the segmented controls around it, and one line whatever the name
+   is. The middle option carries a friend's display name rather than a word we
+   chose, and a long one used to wrap inside its own button and make the row two
+   lines tall — a control changing height because of whose library is open.
+   `min-width: 0` is what lets a flex item shrink under its text at all, and is
+   the half people leave out; the ellipsis is what it shrinks to. */
+.scope-modes button {
+  flex: 1 1 0; min-width: 0;
+  padding: 5px 8px; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* The selected friend scope takes their overlay colour, set inline from the same
    value the globe rings use — so "their rows" and "their dots" are one idea. */
 .scope-modes button[aria-pressed="true"] { color: #000; }

@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Mappify
+Comment=A globe of your music
+# Finds its own folder, because a desktop entry has no relative-path fallback the
+# way a Windows shortcut does: Exec must be absolute, and the path this was
+# written at is a CI runner's. %k is the location of this file, so the entry asks
+# where it is and starts the script beside it — which is what lets one file work
+# wherever the archive was unpacked.
+#
+# %k arrives as a plain path from most file managers and as a file:// URI from
+# some, hence the prefix strip. The quoting is the desktop entry spec's, not the
+# shell's: \" is a literal quote and \$ a literal dollar, and what the shell
+# finally runs is
+#
+#   sh -c 'p=${1#file://}; cd "$(dirname "$p")" && exec ./Mappify.command' sh <path>
+#
+# The trailing `sh` is argv[0] for that shell, so the path lands in $1.
+Exec=sh -c "p=\${1#file://}; cd \"\$(dirname \"\$p\")\" && exec ./Mappify.command" sh %k
+# The script says what it is doing and waits at the end, and stopping Mappify is
+# closing its window — the same as everywhere else.
+Terminal=true
+Categories=AudioVideo;Music;
+Keywords=music;map;globe;spotify;

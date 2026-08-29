@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type Artist, type PlaceTrack } from '../lib/api'
 import { Thumb } from './Thumb'
+import { InfoIcon, PlayIcon } from './icons'
 
 /**
  * One artist in a results list.
@@ -108,7 +109,7 @@ export function ArtistRow({
             aria-label={`Play a random track by ${artist.name}`}
             onClick={only(() => onPlayArtist(artist))}
           >
-            ▶
+            <PlayIcon />
           </button>
           <button
             className="round-btn"
@@ -116,7 +117,7 @@ export function ArtistRow({
             aria-label={`Info about ${artist.name}`}
             onClick={only(() => onInfo(artist.spotify_id))}
           >
-            i
+            <InfoIcon />
           </button>
         </span>
       </div>

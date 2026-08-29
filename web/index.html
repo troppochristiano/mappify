@@ -13,6 +13,26 @@
          underneath as the detail streams in on top of it. Fetched in parallel
          with the bundle rather than after it. -->
     <link rel="preload" as="image" href="/earth/0/0/0.jpg" />
+
+    <!-- The player is the Spotify embed, and everything it needs is
+         cross-origin: this API script, the chunk it pulls from the CDN, then
+         the embed document itself. Just these two origins — measured, not
+         guessed; every extra preconnect is a socket held open for nothing. -->
+    <link rel="preconnect" href="https://open.spotify.com" />
+    <link rel="preconnect" href="https://embed-cdn.spotifycdn.com" crossorigin />
+    <!-- Loaded here rather than injected when the player mounts, because the
+         player mounts behind /api/setup and a React render — the fetch used to
+         start only once the app was already on screen, costing a second before
+         anything could play. The API calls this global exactly once, ever, so
+         it is captured into a promise now, while the parser is still here and
+         the async script below cannot yet have run. SpotifyPlayer awaits that
+         promise instead of racing to install a second callback. -->
+    <script>
+      window.__spotifyIframeApi = new Promise((resolve) => {
+        window.onSpotifyIframeApiReady = resolve
+      })
+    </script>
+    <script async src="https://open.spotify.com/embed/iframe-api/v1"></script>
     <title>Mappify</title>
   </head>
   <body>

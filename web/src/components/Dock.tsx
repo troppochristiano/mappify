@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { BackIcon } from './icons'
 
 /**
  * The dock's sections.
@@ -7,12 +8,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
  * list, at the foot of one card. What used to be a floating toolbar at the top
  * of the map and two sheets at its edges is this bar and the body above it.
  */
-export type DockTab = 'places' | 'search' | 'library' | 'compare' | 'options'
+export type DockTab = 'places' | 'search' | 'compare' | 'options'
 
 /**
  * Line icons, drawn here rather than pulled in.
  *
- * Five shapes is not a dependency. They share one geometry — a 24 box, no fill,
+ * Four shapes is not a dependency. They share one geometry — a 24 box, no fill,
  * a 1.6 stroke in the current colour — so they weigh the same next to each
  * other, and a tab that is dim or lit needs no second copy of the icon.
  */
@@ -27,12 +28,6 @@ const ICON: Record<DockTab, ReactNode> = {
     <>
       <circle cx="11" cy="11" r="6" />
       <path d="M20 20l-4.6-4.6" />
-    </>
-  ),
-  library: (
-    <>
-      <circle cx="12" cy="12" r="8" />
-      <circle cx="12" cy="12" r="2.2" />
     </>
   ),
   compare: (
@@ -53,7 +48,6 @@ const ICON: Record<DockTab, ReactNode> = {
 export const DOCK_TABS: { id: DockTab; label: string }[] = [
   { id: 'places', label: 'places' },
   { id: 'search', label: 'search' },
-  { id: 'library', label: 'library' },
   { id: 'compare', label: 'compare' },
   { id: 'options', label: 'options' },
 ]
@@ -171,7 +165,21 @@ export function Dock({
     // The dock minus its body is exactly grip + head + bar + borders, whatever
     // those happen to measure — which is the point, since giving the tabs icons
     // changed the bar's height and nothing here had to be told.
-    chrome.current = dock.offsetHeight - body.offsetHeight
+    //
+    // From scrollHeight rather than offsetHeight, because offsetHeight is the
+    // box the card has been *given* and this needs the height its contents
+    // *want*. The two differ exactly when it matters: the card is the only thing
+    // in the stack that flex will shrink, so when the player arrives and pushes
+    // the column past its cap, offsetHeight comes back 80px short while the body
+    // inside is still its full height. Chrome then measured 80px too small, avail
+    // came back equal to the height already set, and the clamp below — the thing
+    // that is supposed to give the space back — found nothing to do. The card
+    // stayed squashed with its tab bar clipped off the bottom, permanently.
+    //
+    // scrollHeight is the padding box, so the borders offsetHeight used to
+    // include come back via offsetHeight - clientHeight.
+    chrome.current =
+      dock.scrollHeight + (dock.offsetHeight - dock.clientHeight) - body.offsetHeight
     avail.current = Math.max(
       0,
       route.clientHeight - EDGE * 2 - chrome.current - GAP - (player?.offsetHeight ?? 0)
@@ -185,12 +193,24 @@ export function Dock({
     if (!route || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       measure()
-      // A window that shrank under the sheet takes the sheet down with it.
-      setHeight((h) => (h > avail.current ? avail.current : h))
+      // Both directions, deliberately. Clamping alone was a ratchet: a window
+      // that shrank took the sheet down with it, and a window that grew back
+      // left it there — short of the top, with dead space above it — until it
+      // was closed and reopened. Every intermediate frame of a slow drag of the
+      // window edge cut it further.
+      //
+      // openHeight is the size that was *asked* for rather than the size that
+      // fit, so the sheet can be given back as much of it as there is now room
+      // for. Zero means it was opened by a click and never pulled to a size, so
+      // what it asked for was "as tall as it goes" — which is avail itself,
+      // whatever that has since become.
+      setHeight((h) =>
+        h > 0 ? Math.min(openHeight.current || avail.current, avail.current) : 0
+      )
     })
     ro.observe(route)
-    // The player too: it collapses to nothing with no track and slides back in
-    // with one, and `measure` subtracts its height. Without this the sheet keeps
+    // The player too: it is nothing until the first track and 80px from then
+    // on, and `measure` subtracts its height. Without this the sheet keeps
     // whichever cap it was given when it last happened to be measured, so it
     // either stops 80px short of the top or gets pushed off the bottom.
     const player = stack?.querySelector<HTMLElement>('.player')
@@ -308,7 +328,7 @@ export function Dock({
       <div className="dock-head">
         {onBack && (
           <button className="ghost dock-back" onClick={onBack} aria-label="Back">
-            ←
+            <BackIcon />
           </button>
         )}
         <h1 className="dock-title">{title}</h1>

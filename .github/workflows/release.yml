@@ -93,14 +93,6 @@ jobs:
             echo "::warning::origins against MusicBrainz at 1 req/s instead of instantly."
           fi
 
-      # Windows gets a real executable rather than a .bat: a .bat carrying Mark
-      # of the Web — which everything extracted from a downloaded zip carries —
-      # is refused outright, usually with nothing to click. The launcher is also
-      # a windows-subsystem binary, so there is no console window at all.
-      - name: Build the launcher
-        if: matrix.os == 'windows-latest'
-        run: cargo build --release --manifest-path launcher/Cargo.toml
-
       - name: Assemble
         shell: bash
         run: |
@@ -109,12 +101,40 @@ jobs:
           mkdir -p out/Mappify/web && mv out/Mappify/dist out/Mappify/web/dist
           [ -d node_modules ] && cp -r node_modules out/Mappify/ || true
           [ -f index.db ] && cp index.db out/Mappify/ || true
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp launcher/target/release/Mappify.exe out/Mappify/
-          else
+          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
             cp Mappify.command out/Mappify/
             chmod +x out/Mappify/Mappify.command
           fi
+          # .command is the extension macOS opens in Terminal; Linux desktops
+          # want an entry file instead, and a file manager will not offer to run
+          # one that is not executable.
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            cp Mappify.desktop out/Mappify/
+            chmod +x out/Mappify/Mappify.desktop
+          fi
+
+      # A shortcut to the Node we ship, rather than a launcher of our own.
+      #
+      # The launcher this replaces was a small unsigned Rust binary that started a
+      # hidden child process — which is also the shape of a dropper, so Defender's
+      # ML model began blocking it outright as Wacatac!ml, severity 5, with no
+      # "run anyway" offered. There is nothing to appeal in a build with no binary
+      # of ours in it: node.exe is signed by the OpenJS Foundation, and a shortcut
+      # is inert.
+      #
+      # The cost is a console window, minimised (ShowCmd 7) rather than absent.
+      # Closing it stops the server, which is what the job object used to do.
+      - name: Make the Windows shortcut
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          ./tools/make-shortcut.ps1 `
+            -Lnk       out/Mappify/Mappify.lnk `
+            -Target    out/Mappify/runtime/node.exe `
+            -Arguments 'tools\start.js' `
+            -WorkDir   out/Mappify `
+            -Description 'Mappify — a globe of your music' `
+            -ShowCmd   7
 
       - name: Package
         shell: bash
@@ -149,40 +169,41 @@ jobs:
 
             ### Windows
 
-            Unzip and double-click **Mappify.exe**. Windows will object, in one
-            of two ways.
+            Unzip the whole folder somewhere and double-click **Mappify**. A small
+            terminal window opens minimised and the app comes up in your browser.
 
-            **"Windows protected your PC"** (blue box) is SmartScreen: click
-            **More info** → **Run anyway**. Once, not every time.
+            Keep the folder together — the shortcut points at the copy of Node
+            beside it — and leave the terminal window alone while you are using
+            the app. Closing it stops the server; the browser tab on its own can
+            be closed and reopened freely, and there is a **Quit Mappify** button
+            in the library panel.
 
-            **"Smart App Control has blocked an app that might be unsafe"** is a
-            different and stricter check, and it offers no way through — there is
-            only **OK**. It is on by default on some recent Windows 11 machines
-            and blocks anything unsigned regardless of where it came from, so
-            there is nothing to unblock and nothing to click. Two ways round it:
+            Earlier versions shipped a small launcher of our own, which Microsoft
+            Defender started blocking as a false positive. This one ships no
+            executable of ours at all: the shortcut runs the copy of Node in the
+            folder, which is signed by the OpenJS Foundation, so nothing objects.
 
-            - **Start it without the launcher.** In the Mappify folder, open a
-              terminal and run `runtime\node.exe tools\start.js`. That is exactly
-              what double-clicking does; the copy of Node in the folder is signed,
-              so it is allowed through. Leave the terminal open while you use it.
-            - **Turn Smart App Control off**, under Windows Security → App &
-              browser control. Be careful with this one: Microsoft says it cannot
-              be turned back on afterwards without reinstalling Windows.
-
-            No console window appears when the launcher works. Mappify keeps
-            running after you close the browser tab — there is a **Quit Mappify**
-            button in the library panel.
-
-            If it seems to do nothing at all, look in
-            `%APPDATA%\Mappify\launcher.log`. The usual answer is that Mappify was
-            already running: it will not start a second copy, and reopens the one
-            you have instead.
+            If double-clicking seems to do nothing, open the folder in a terminal
+            and run `runtime\node.exe tools\start.js` — the same thing the
+            shortcut does, with the error left on screen. The usual answer is that
+            Mappify is already running: it will not start a second copy.
 
             ### macOS
 
             Right-click **Mappify.command** → **Open**, then **Open** again. Once,
             not every time.
 
-            Neither system trusts this because the download is not code-signed —
-            a certificate costs a few hundred a year, and this is a personal
+            macOS does not trust this because the download is not code-signed — a
+            certificate costs a few hundred a year, and this is a personal
             project.
+
+            ### Linux
+
+            Double-click **Mappify.desktop**. Most desktops will not run a
+            downloaded entry until you say so: in the file's Properties, tick
+            **Allow executing file as program** (GNOME also has **Allow
+            Launching** in its right-click menu), then open it.
+
+            Or skip all that and run `./Mappify.command` from a terminal in the
+            folder — it is the same script the entry starts, and it prints
+            anything that goes wrong.

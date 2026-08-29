@@ -26,7 +26,7 @@ there is no Chromium on the machine it falls back to a normal browser tab.
 
 No console window opens, and nothing is left behind in a terminal. Close the
 window and Mappify stops on its own about a minute later — unless an import is
-still running, in which case it finishes first. **Quit Mappify** in the library
+still running, in which case it finishes first. **Quit Mappify** in the options
 panel is the impatient version.
 
 **You stay signed in.** The session cookie lasts 30 days and the Spotify tokens
@@ -79,32 +79,37 @@ minutes it would cost to ask MusicBrainz artist by artist.
 Back up `data/` if you have pinned any artists by hand; everything else in there
 can be rebuilt by importing again.
 
-### Building the Windows launcher
+### How a Windows download starts
 
-`Mappify.exe` is a ~300 KB Rust binary in [`launcher/`](launcher) whose whole job
-is to start the Node server without a console window and make sure it cannot
-outlive itself. All the behaviour is still in `tools/start.js`.
+`Mappify.lnk` is a shortcut to `runtime\node.exe` with `tools\start.js` as its
+argument, written by [`tools/make-shortcut.ps1`](tools/make-shortcut.ps1) during
+the build. Nothing is compiled and no binary of ours ships.
 
-```bash
-cargo build --release --manifest-path launcher/Cargo.toml
-```
+The load-bearing part is the relative path. A `.lnk` records where its target was
+when it was made — a path on a CI runner — so the shortcut also stores the target
+relative to itself, which is the fallback the shell repairs both the target and
+the working directory from when the absolute one is missing. That is what lets
+the same file work wherever someone unzips the folder. `WScript.Shell` cannot
+write that field, hence the `IShellLinkW` call in the script.
 
-It needs the MSVC toolchain (Visual Studio Build Tools, "Desktop development with
-C++"). Without it, `rustup toolchain install stable-x86_64-pc-windows-gnu` and
-`--target x86_64-pc-windows-gnu` builds the same binary with no Visual Studio.
-CI builds the MSVC one; the release workflow does this automatically.
+This replaced a small Rust launcher, which is worth knowing about because it
+explains what the shortcut gives up. That binary was unsigned and started a
+hidden child process, which is also the shape of a dropper: Defender's ML model
+began blocking it as `Trojan:Win32/Wacatac.C!ml` at severity 5 — no "run anyway",
+nothing to appeal, and it quarantined the file on download. A shortcut to a
+Node that Microsoft's own SmartScreen already trusts has nothing to flag. Nor
+does a `.bat`, which is where this started, but Windows refuses those outright
+once they carry Mark of the Web.
 
-Three things it handles that a `.bat` could not:
+Two things the launcher did that the shortcut does differently:
 
-- **No console.** It is a windows-subsystem binary and spawns Node with
-  `CREATE_NO_WINDOW`.
-- **The server cannot be orphaned.** The child is assigned to a job object with
-  `KILL_ON_JOB_CLOSE`, so ending the launcher — including from Task Manager —
-  takes the server with it. Otherwise it would sit holding port 6942 with no
-  window, and the next launch would fail for no visible reason.
-- **Failures are readable.** With no console, output goes to
-  `%APPDATA%\Mappify\launcher.log`, and a bad exit shows the tail of it in a
-  dialog. Port 6942 already in use is the common one.
+- **A console window**, minimised rather than absent. Node has no windowless
+  mode, and the ways around that — a `.vbs` shim under `wscript` — are the exact
+  pattern AV heuristics look for, which is the hole we just climbed out of.
+- **Stopping the server** is now closing that window, rather than a job object
+  with `KILL_ON_JOB_CLOSE`. Same guarantee by simpler means: the window *is* the
+  server, so it cannot be orphaned by killing something else. Errors are on
+  screen there instead of in `%APPDATA%\Mappify\launcher.log`.
 
 ### Developing on it
 

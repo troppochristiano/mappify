@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { CountryNode, PlaceNode } from '../lib/api'
+import { BackIcon } from './icons'
 
 export type Crumb = { label: string; select: PlaceSelection }
 
@@ -103,7 +104,7 @@ export function PlaceView({
             onClick={() => onNavigate(parent.select)}
             aria-label={`Back to ${parent.label}`}
           >
-            ←
+            <BackIcon />
           </button>
         )}
         {crumbs.map((c, i) => (

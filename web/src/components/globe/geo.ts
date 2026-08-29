@@ -81,6 +81,20 @@ export type DotProps = {
    * read feature-state.
    */
   dim: boolean
+  /**
+   * How big *your* dot is at this place, on the same 0..1 area scale as `size`.
+   *
+   * Only ever non-zero on the friend overlay, and only for a place you both
+   * have — which is what makes it the test for "shared": every real place has at
+   * least one track, so a zero here means you do not have this one.
+   *
+   * It exists so a friend's ring can be held outside your dot rather than
+   * disappearing under it. Their ring is sized by their own track count, and for
+   * a city where they have two tracks and you have two hundred that ring is
+   * drawn well inside your dot — truthful and invisible, which is the one
+   * combination no encoding is allowed to be.
+   */
+  mine: number
 }
 
 /**
@@ -110,7 +124,15 @@ export function dotsToGeoJSON(
    * Defaults to the in-array maximum, which is what every existing caller wants
    * and what this always did.
    */
-  scaleMax?: number
+  scaleMax?: number,
+  /**
+   * Your own places, for the overlay to measure itself against.
+   *
+   * Passed on the friend call and on no other — see `mine` in DotProps. Keyed by
+   * qid, which both libraries share for the same city; that is the whole premise
+   * of the overlay.
+   */
+  mine?: ReadonlyMap<string, MapPoint>
 ): FC<Point, DotProps> {
   // Floored at 1 for the same reason the reduce seeds at 1: an empty library, or
   // a union maximum of zero, would otherwise divide every size by zero.
@@ -130,6 +152,10 @@ export function dotsToGeoJSON(
         weight: Math.log(1 + p.tracks) / logMax,
         size: Math.sqrt(p.tracks / max),
         dim: (lit != null && !lit.has(p.qid)) || (spot != null && !spot.has(p.qid)),
+        // Against the same max as `size` above, so the two are directly
+        // comparable. Always emitted, never omitted: a missing property makes
+        // the style's assertions throw and drops the feature entirely.
+        mine: Math.sqrt((mine?.get(p.qid)?.tracks ?? 0) / max),
       },
     })),
   }

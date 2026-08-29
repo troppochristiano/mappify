@@ -45,8 +45,6 @@ export function FloatingWindow({
   children: ReactNode
 }) {
   const [rect, setRect] = useState<Rect>(() => clamp(load(storageKey) ?? defaultRect))
-  const [maximized, setMaximized] = useState(false)
-  const restoreTo = useRef<Rect | null>(null)
   const drag = useRef<{ mode: 'move' | 'resize'; x: number; y: number; rect: Rect } | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const lastSize = useRef<Size>({ width: 0, height: 0 })
@@ -64,10 +62,8 @@ export function FloatingWindow({
     onBodySize({ width, height })
   })
 
-  // Persist whatever the user settled on, but never the maximized rect — that is
-  // a temporary state, not a position they chose.
+  // Persist whatever the user settled on.
   useEffect(() => {
-    if (maximized) return
     // Never persist a rect derived from an unmeasurable viewport.
     if (window.innerWidth < MIN_W || window.innerHeight < MIN_H) return
     try {
@@ -75,7 +71,7 @@ export function FloatingWindow({
     } catch {
       /* private mode, quota — the window still works, it just will not persist */
     }
-  }, [rect, maximized, storageKey])
+  }, [rect, storageKey])
 
   // A window restored from storage, or left near an edge, must not end up
   // somewhere it cannot be grabbed back from when the viewport shrinks.
@@ -87,7 +83,11 @@ export function FloatingWindow({
 
   const onPointerDown = useCallback(
     (mode: 'move' | 'resize') => (e: React.PointerEvent<HTMLElement>) => {
-      if (maximized && mode === 'move') return
+      // The close button sits inside the drag surface, and this handler used to
+      // swallow them both: cancelling `pointerdown` suppresses the compatibility
+      // mouse events that follow it, `click` included, so their onClick never
+      // ran. The header stays draggable everywhere that is not a control.
+      if ((e.target as HTMLElement).closest('button')) return
       e.preventDefault()
       // Record the gesture before capturing. setPointerCapture throws for a
       // pointer id that is not currently active, and doing it first meant one
@@ -100,7 +100,7 @@ export function FloatingWindow({
            leaves the element. The drag still works through the element itself. */
       }
     },
-    [rect, maximized]
+    [rect]
   )
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
@@ -128,19 +128,12 @@ export function FloatingWindow({
     }
   }, [])
 
-  const toggleMaximize = () => {
-    if (maximized) {
-      if (restoreTo.current) setRect(clamp(restoreTo.current))
-      setMaximized(false)
-    } else {
-      restoreTo.current = rect
-      setMaximized(true)
-    }
-  }
-
-  const style: React.CSSProperties = maximized
-    ? { left: 12, top: 12, width: 'calc(100% - 24px)', height: 'calc(100% - 24px)' }
-    : { left: rect.x, top: rect.y, width: rect.w, height: rect.h }
+  // No maximize. It was a button beside the close, and taking the button away
+  // while keeping the state would have left it reachable only by double-clicking
+  // the header — with the resize grip hidden in that state and nothing on screen
+  // to get back out of it. Every way to size this window is now visible: drag
+  // the head, pull the corner, or close it.
+  const style: React.CSSProperties = { left: rect.x, top: rect.y, width: rect.w, height: rect.h }
 
   return (
     <div className="win" style={style} role="dialog" aria-label={typeof title === 'string' ? title : undefined}>
@@ -150,18 +143,9 @@ export function FloatingWindow({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        onDoubleClick={toggleMaximize}
       >
         <h2 className="win-title">{title}</h2>
         <div className="win-actions">
-          <button
-            className="win-btn"
-            onClick={toggleMaximize}
-            aria-label={maximized ? 'Restore window' : 'Maximize window'}
-            title={maximized ? 'Restore' : 'Maximize'}
-          >
-            {maximized ? '❐' : '▢'}
-          </button>
           <button className="win-btn" onClick={onClose} aria-label="Close window" title="Close">
             ×
           </button>
@@ -172,16 +156,14 @@ export function FloatingWindow({
 
       <div className="win-body" ref={bodyRef}>{children}</div>
 
-      {!maximized && (
-        <div
-          className="win-grip"
-          onPointerDown={onPointerDown('resize')}
-          onPointerMove={onPointerMove}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          aria-hidden="true"
-        />
-      )}
+      <div
+        className="win-grip"
+        onPointerDown={onPointerDown('resize')}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        aria-hidden="true"
+      />
     </div>
   )
 }

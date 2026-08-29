@@ -473,9 +473,13 @@ export function Globe({
         ? // Never dimmed and never spotlit: the overlay is passive, so search
           // and menu hover act on your library alone rather than quietly
           // rewriting what a friend's map says.
-          dotsToGeoJSON(friendPoints, null, null, scaleMax)
+          //
+          // Your places go in as well, and only here: a ring at a city you both
+          // have has to know how big your dot is to stay outside it. See `mine`
+          // in DotProps.
+          dotsToGeoJSON(friendPoints, null, null, scaleMax, byQid)
         : EMPTY_FC,
-    [friendPoints, scaleMax]
+    [friendPoints, scaleMax, byQid]
   )
   const linkEndsData = useMemo(
     () =>
@@ -630,6 +634,11 @@ export function Globe({
     const coast = map.getSource(SOURCE.coast) as GeoJSONSource | undefined
     coast?.setData(coastlines as unknown as GeoJSON.FeatureCollection)
     setDots(map)
+    // Including the rings, which used to be left out — and the effect that feeds
+    // them has `friendData` in its deps, which does not change on a remount. So
+    // a friend's overlay went missing for the whole life of the second map, in
+    // exactly the way the note above describes for everything else.
+    setFriendDots(map)
     setNestLinks(map)
     setLinks(map)
     setLinkEnds(map)
@@ -1116,8 +1125,26 @@ export function Globe({
 
   // ----- camera -----
 
+  /**
+   * The instruction the camera has already carried out.
+   *
+   * The effect below lists the insets because it reads them, but a change to one
+   * is not a new instruction — and flyTo is never cleared, so re-running on an
+   * inset change re-flew to whatever place was last picked. That threw the
+   * camera back there after you had panned away by hand, fired a fresh 1.4s
+   * flight on every pointermove while the sheet was being dragged, and lurched
+   * sideways and back each time the sheet crossed the tall/short threshold and
+   * swapped a bottom strip of padding for a left column of it.
+   *
+   * Compared by identity rather than by `key`: the route builds a fresh object
+   * per selection, so identity is exactly "a new instruction" — including
+   * picking the same place twice, which a key would have swallowed.
+   */
+  const flown = useRef<FlyTarget | null>(null)
+
   useEffect(() => {
-    if (!flyTo) return
+    if (!flyTo || flyTo === flown.current) return
+    flown.current = flyTo
     withMap((map) => {
       // What the camera would do to fit the box, centre and zoom together. Both
       // are taken, or neither: see the note on FlyTarget for why splitting them

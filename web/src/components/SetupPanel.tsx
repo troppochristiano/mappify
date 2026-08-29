@@ -4,7 +4,10 @@ import { useImportStatus } from '../lib/useImportStatus'
 import { SpotifyApp } from './SpotifyApp'
 
 /**
- * Connect + import, in the app. Everything here used to be a terminal command.
+ * Connect + import, in the options tab. Everything here used to be a terminal
+ * command, and then a tab of its own next to options — but connecting an account
+ * and choosing how the globe draws are the same kind of visit, so they share one
+ * page rather than splitting "your library" across two tabs.
  *
  * The Spotify limit is stated up front rather than letting a friend hit an
  * opaque rejection on Spotify's own error page: Development Mode allows five
@@ -39,118 +42,127 @@ export function SetupPanel() {
   const running = Boolean(s?.running)
   const pct = s && s.total ? Math.round((s.done / s.total) * 100) : 0
 
+  // A fragment, not a div: this renders inside the options tab's own
+  // .dock-options container, so each block is a <section> and spaces itself off
+  // the same rule as Dots and Autoplay instead of carrying inline margins.
   return (
-    <div>
-      <h2>Spotify</h2>
-      {setup.data?.spotify.connected ? (
-        <p className="panel-sub">Connected.</p>
-      ) : (
-        <>
-          <p className="panel-sub">
-            {setup.data?.spotify.wrongApp ? (
-              <>
-                You were signed in through a different Spotify app, so those
-                tokens no longer work. Connect again to sign in through this one.
-              </>
-            ) : (
-              <>
-                Connect to import your Liked Songs and playlists. Spotify allows five
-                authorized accounts per app, so this only works for accounts added to
-                the app's allowlist.
-              </>
-            )}
-          </p>
-          <button className="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
-            {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
-          </button>
-          {connect.isError && (
-            <p className="panel-sub" style={{ marginTop: 10 }}>
-              {String(connect.error)}
-            </p>
-          )}
-        </>
-      )}
-
-      <SpotifyApp tone="panel" />
-
-      <h2 style={{ marginTop: 20 }}>Origin index</h2>
-      <p className="panel-sub">
-        {setup.data?.index.kind === 'none' ? (
+    <>
+      <section>
+        <h2>Spotify</h2>
+        {setup.data?.spotify.connected ? (
+          <p className="panel-sub">Connected.</p>
+        ) : (
           <>
-            No shared index configured — origins resolve against MusicBrainz at one
-            request per second, which is slow but works.
+            <p className="panel-sub">
+              {setup.data?.spotify.wrongApp ? (
+                <>
+                  You were signed in through a different Spotify app, so those
+                  tokens no longer work. Connect again to sign in through this one.
+                </>
+              ) : (
+                <>
+                  Connect to import your Liked Songs and playlists. Spotify allows five
+                  authorized accounts per app, so this only works for accounts added to
+                  the app's allowlist.
+                </>
+              )}
+            </p>
+            <button className="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
+              {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
+            </button>
+            {connect.isError && (
+              <p className="panel-sub" style={{ marginTop: 10 }}>
+                {String(connect.error)}
+              </p>
+            )}
+          </>
+        )}
+
+        <SpotifyApp tone="panel" />
+      </section>
+
+      <section>
+        <h2>Origin index</h2>
+        <p className="panel-sub">
+          {setup.data?.index.kind === 'none' ? (
+            <>
+              No shared index configured — origins resolve against MusicBrainz at one
+              request per second, which is slow but works.
+            </>
+          ) : (
+            <>
+              {Number(setup.data?.index.artist_rows ?? 0).toLocaleString()} artists and{' '}
+              {Number(setup.data?.index.area_rows ?? 0).toLocaleString()} places, from
+              MusicBrainz dump {setup.data?.index.dump_version}. Matching is instant.
+            </>
+          )}
+        </p>
+      </section>
+
+      <section>
+        <h2>Import</h2>
+        {running ? (
+          <>
+            <p className="panel-sub">
+              {s?.phase === 'origins-live'
+                ? 'Looking up artists the index does not have, at one per second.'
+                : s?.message}
+            </p>
+            <div className="bar">
+              <span style={{ width: `${pct}%` }} />
+            </div>
+            <p className="panel-sub" style={{ marginTop: 6 }}>
+              {s?.done ?? 0}
+              {s?.total ? ` / ${s.total}` : ''} — {s?.phase}
+            </p>
+            <button className="ghost" onClick={() => api.cancelImport()}>stop</button>
           </>
         ) : (
           <>
-            {Number(setup.data?.index.artist_rows ?? 0).toLocaleString()} artists and{' '}
-            {Number(setup.data?.index.area_rows ?? 0).toLocaleString()} places, from
-            MusicBrainz dump {setup.data?.index.dump_version}. Matching is instant.
+            <button
+              className="primary"
+              disabled={!setup.data?.spotify.connected || startImport.isPending}
+              onClick={() => startImport.mutate()}
+            >
+              {setup.data?.hasLibrary ? 'Re-import library' : 'Import library'}
+            </button>
+            {s?.phase === 'error' && <p className="panel-sub" style={{ marginTop: 10 }}>{s.message}</p>}
+            {s?.summary && (
+              <div className="panel-sub" style={{ marginTop: 12 }}>
+                <div>
+                  {s.summary.tracks} tracks · {s.summary.artists} artists ·{' '}
+                  {s.summary.playlists} playlists
+                </div>
+                <div>
+                  {s.summary.fromIndex} matched from the index
+                  {s.summary.fromLive ? `, ${s.summary.fromLive} looked up live` : ''}
+                </div>
+                {!!s.summary.skippedPlaylists?.length && (
+                  <div style={{ marginTop: 8 }}>
+                    {s.summary.skippedPlaylists.length} playlist(s) came back empty because
+                    Spotify only returns tracks for playlists you own:
+                    <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
+                      {s.summary.skippedPlaylists.slice(0, 6).map((p) => (
+                        <li key={p.name}>
+                          {p.name} — {p.owner ?? 'someone else'} ({p.tracks} tracks)
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
-      </p>
-
-      <h2 style={{ marginTop: 20 }}>Import</h2>
-      {running ? (
-        <>
-          <p className="panel-sub">
-            {s?.phase === 'origins-live'
-              ? 'Looking up artists the index does not have, at one per second.'
-              : s?.message}
-          </p>
-          <div className="bar">
-            <span style={{ width: `${pct}%` }} />
-          </div>
-          <p className="panel-sub" style={{ marginTop: 6 }}>
-            {s?.done ?? 0}
-            {s?.total ? ` / ${s.total}` : ''} — {s?.phase}
-          </p>
-          <button className="ghost" onClick={() => api.cancelImport()}>stop</button>
-        </>
-      ) : (
-        <>
-          <button
-            className="primary"
-            disabled={!setup.data?.spotify.connected || startImport.isPending}
-            onClick={() => startImport.mutate()}
-          >
-            {setup.data?.hasLibrary ? 'Re-import library' : 'Import library'}
-          </button>
-          {s?.phase === 'error' && <p className="panel-sub" style={{ marginTop: 10 }}>{s.message}</p>}
-          {s?.summary && (
-            <div className="panel-sub" style={{ marginTop: 12 }}>
-              <div>
-                {s.summary.tracks} tracks · {s.summary.artists} artists ·{' '}
-                {s.summary.playlists} playlists
-              </div>
-              <div>
-                {s.summary.fromIndex} matched from the index
-                {s.summary.fromLive ? `, ${s.summary.fromLive} looked up live` : ''}
-              </div>
-              {!!s.summary.skippedPlaylists?.length && (
-                <div style={{ marginTop: 8 }}>
-                  {s.summary.skippedPlaylists.length} playlist(s) came back empty because
-                  Spotify only returns tracks for playlists you own:
-                  <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
-                    {s.summary.skippedPlaylists.slice(0, 6).map((p) => (
-                      <li key={p.name}>
-                        {p.name} — {p.owner ?? 'someone else'} ({p.tracks} tracks)
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
+      </section>
 
       {/* A double-clickable build has no console to close and no window of its
           own, so without this the only way to stop it is Task Manager — and
           closing the tab would leave a server running invisibly. Hidden on a
           hosted instance, where the caller is not the one running it. */}
       {setup.data?.local && (
-        <>
-          <h2 style={{ marginTop: 20 }}>Quit</h2>
+        <section>
+          <h2>Quit</h2>
           <p className="panel-sub">
             Mappify stops on its own about a minute after you close the last tab,
             unless an import is still running. This is the impatient version.
@@ -158,8 +170,8 @@ export function SetupPanel() {
           <button className="ghost" onClick={() => quit.mutate()} disabled={quit.isPending}>
             {quit.isSuccess ? 'stopped — you can close this tab' : 'Quit Mappify'}
           </button>
-        </>
+        </section>
       )}
-    </div>
+    </>
   )
 }

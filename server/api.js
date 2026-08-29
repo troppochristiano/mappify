@@ -1417,7 +1417,7 @@ if (LOOPBACK && process.env.MAPPIFY_AUTOQUIT !== '0') {
     isBusy: () => anyRunning() || inFlight > 0,
     onQuit: () => {
       console.log('no browser tab for a while — stopping');
-      process.exit(0); // 0, or the launcher shows an error dialog
+      process.exit(0); // 0, or quitting leaves an error on the console behind it
     },
   });
 }

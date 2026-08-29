@@ -4,7 +4,7 @@
 // on CI — for the times you need to check the *packaged* app rather than the dev
 // server, which is a different program in three ways that matter: it serves the
 // built front end instead of Vite, it reads the origin index from a file beside
-// the app instead of Turso, and it is started by the launcher rather than by
+// the app instead of Turso, and it is started by the shortcut rather than by
 // npm. Bugs live in all three gaps.
 //
 // This is deliberately not a second implementation of the release. It builds for
@@ -76,8 +76,9 @@ if (fs.existsSync(path.join(ROOT, 'node_modules'))) {
 }
 
 step('Copying the runtime');
-// The launcher looks for runtime/node.exe first and falls back to PATH; a
-// bundle without one is still testable, it just is not what people download.
+// The shortcut points straight at runtime/node.exe, so a bundle without one has
+// nothing to double-click — still testable by running start.js, but not what
+// people download.
 if (WINDOWS) {
   fs.mkdirSync(path.join(OUT, 'runtime'), { recursive: true });
   fs.copyFileSync(process.execPath, path.join(OUT, 'runtime', 'node.exe'));
@@ -103,37 +104,51 @@ if (index) {
   note('Build one with:  node tools/build-bundle-index.js');
 }
 
-step('Building the launcher');
-// Warns rather than fails: the launcher is packaging, and everything worth
-// testing about the bundle is reachable without it. Building it needs the MSVC
-// toolchain, which is a Visual Studio install rather than something npm can
-// fetch — and inside Git Bash the GNU `link` from coreutils shadows MSVC's
-// link.exe, so a machine that *has* the toolchain still fails here and succeeds
-// from PowerShell. Not a reason to withhold a bundle.
-let launcher = false;
+step('Making the shortcut');
+// A .lnk to the Node beside it, not a launcher of our own: Defender's ML model
+// began blocking the Rust one as Wacatac!ml with no way through, and a build
+// containing no unsigned binary of ours has nothing to block. See
+// tools/make-shortcut.ps1 for why the relative path is the load-bearing part.
+//
+// Warns rather than fails, as the cargo build it replaces did: everything worth
+// testing about a bundle is reachable by running start.js directly.
+let shortcut = false;
 if (WINDOWS) {
-  launcher = tryRun('cargo', [
-    'build',
-    '--release',
-    '--manifest-path',
-    path.join(ROOT, 'launcher', 'Cargo.toml'),
+  shortcut = tryRun('powershell', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    path.join(ROOT, 'tools', 'make-shortcut.ps1'),
+    '-Lnk',
+    path.join(OUT, 'Mappify.lnk'),
+    '-Target',
+    path.join(OUT, 'runtime', 'node.exe'),
+    '-Arguments',
+    'tools\\start.js',
+    '-WorkDir',
+    OUT,
+    '-Description',
+    'Mappify — a globe of your music',
+    '-ShowCmd',
+    '7',
   ]);
-  if (launcher) {
-    fs.copyFileSync(
-      path.join(ROOT, 'launcher', 'target', 'release', 'Mappify.exe'),
-      path.join(OUT, 'Mappify.exe')
-    );
-  } else {
+  if (!shortcut) {
     note('');
-    note('cargo could not build it — the bundle is complete apart from Mappify.exe.');
-    note('Start it the way the release notes tell people to when Windows blocks the');
-    note('launcher, which runs exactly the same code:');
+    note('the shortcut could not be written — the bundle is complete apart from it.');
+    note('Start it the way the shortcut would, which runs exactly the same code:');
     note('');
     note('  cd out\\Mappify && runtime\\node.exe tools\\start.js');
   }
 } else {
   fs.copyFileSync(path.join(ROOT, 'Mappify.command'), path.join(OUT, 'Mappify.command'));
   fs.chmodSync(path.join(OUT, 'Mappify.command'), 0o755);
+  // Linux file managers want a desktop entry, and will not offer to run one that
+  // is not executable. macOS has no use for it.
+  if (process.platform === 'linux') {
+    fs.copyFileSync(path.join(ROOT, 'Mappify.desktop'), path.join(OUT, 'Mappify.desktop'));
+    fs.chmodSync(path.join(OUT, 'Mappify.desktop'), 0o755);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +156,8 @@ if (WINDOWS) {
 step('Done');
 note(OUT);
 if (!WINDOWS) note('Right-click Mappify.command → Open');
-else if (launcher) note('Double-click Mappify.exe');
-else note(String.raw`runtime\node.exe tools\start.js   (this build has no launcher)`);
+else if (shortcut) note('Double-click Mappify');
+else note(String.raw`runtime\node.exe tools\start.js   (this build has no shortcut)`);
 console.log(
   '\n  This bundle keeps its library in the per-user data directory, not in the\n' +
     '  checkout — so it is the installed app you are testing, tokens and all, and\n' +

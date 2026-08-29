@@ -58,9 +58,8 @@ export function armAutoQuit({ isBusy, onQuit }) {
   const timer = setInterval(() => {
     if (fired) return; // process.exit is not instant; do not ask twice
     // Wrapped, because a throw inside a timer exits the process with a non-zero
-    // code, and the launcher shows an error dialog on any non-zero exit — so a
-    // bug here would greet someone with a stack trace for what should be a
-    // silent, expected shutdown.
+    // code — so a bug here would leave a stack trace on the console for what
+    // should be a silent, expected shutdown.
     try {
       if (!armed) return; // started with no browser yet, e.g. `npm run server`
       if (isBusy()) {
