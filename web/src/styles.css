@@ -889,8 +889,11 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 /* A section heading and the switch for the section. The toggle sits on the
    heading line rather than above the list as a card, because what it governs is
    the list — the eyes in the rows are the per-library controls. */
+/* Centred, not baseline-aligned: the pill's box is taller than the heading's
+   line, and sitting them on a shared baseline pushed the row to 38px for two
+   things that both fit inside 25. */
 .list-head {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
   margin-bottom: 10px;
 }
 .list-head h2 { margin: 0; }
