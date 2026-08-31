@@ -88,6 +88,29 @@ export function rememberPending(state, verifier) {
   );
 }
 
+/**
+ * Whether a sign-in is part-way through — sent to Spotify, not yet come back.
+ *
+ * The idle shutdown needs this. Clicking Connect navigates the only tab away to
+ * accounts.spotify.com, which fires `pagehide`, which tells this server the tab
+ * is going — so from here a sign-in looks exactly like somebody closing the app.
+ * Thirty seconds later the sweep would find no live tab and exit, and the
+ * callback would come back to a closed port. The first sign-in on a machine is
+ * the slowest one there is, being the one with a password and possibly a second
+ * factor in it, so it is the most likely to be shut down halfway.
+ *
+ * A row here lives fifteen minutes at most and is deleted the moment it is
+ * redeemed, so an abandoned sign-in cannot hold the server up for longer than
+ * the flow could have taken anyway.
+ */
+export function pendingAuth() {
+  const db = openControlDb();
+  const row = db
+    .prepare('SELECT 1 AS yes FROM pending_auth WHERE created_at > ? LIMIT 1')
+    .get(Date.now() - PENDING_TTL_MS);
+  return Boolean(row);
+}
+
 /** Single use: a state that has been redeemed cannot be replayed. */
 export function claimPending(state) {
   const db = openControlDb();

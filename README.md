@@ -16,8 +16,14 @@ open **Mappify**. Nothing to install — the runtime is inside.
 
 > The download is not code-signed, so the first launch needs one click past a
 > warning. **Windows**: SmartScreen says "unidentified developer" — *More info* →
-> *Run anyway*. **macOS**: right-click **Mappify.command** → *Open*, then *Open*.
-> Once each, not every time.
+> *Run anyway*. **macOS**: right-click **Mappify** → *Open*, then *Open* — and on
+> Sequoia or later, where that no longer offers a way through, open it once and
+> then allow it in *System Settings → Privacy & Security*. Once each, not every
+> time.
+
+On **macOS** the download is a single **Mappify.app**, which you can drag to
+Applications like anything else. On **Windows** and **Linux** it is a folder with
+a launcher in it — keep the folder together and put a shortcut wherever you like.
 
 It opens in **its own window** — no tabs, no address bar, its own taskbar icon.
 That is a Chromium app window (`--app=`), using the browser you already have and

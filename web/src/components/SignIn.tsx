@@ -38,7 +38,7 @@ function wrongHostFor(redirectUri: string | undefined) {
  * the person who registered the app, and warning them about an allowlist they
  * control themselves makes their own laptop sound like somebody else's server.
  */
-export function SignIn({ local }: { local: boolean }) {
+export function SignIn({ local, stopped = false }: { local: boolean; stopped?: boolean }) {
   const setup = useQuery({ queryKey: ['setup'], queryFn: api.setup })
   const wrongHost = wrongHostFor(setup.data?.redirectUri)
   const connect = useMutation({
@@ -63,9 +63,21 @@ export function SignIn({ local }: { local: boolean }) {
           <a href={wrongHost.url}>Open it on {wrongHost.apiHost}</a>.
         </p>
       )}
-      <button className="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
+      <button
+        className="primary"
+        onClick={() => connect.mutate()}
+        disabled={connect.isPending || stopped}
+      >
         {connect.isPending ? 'opening Spotify…' : 'Connect Spotify'}
       </button>
+      {/* Quitting stops the server this page came from, so the button above has
+          nothing left to talk to. Said plainly, with the way back, rather than
+          left to be found by clicking it. */}
+      {stopped && (
+        <p className="fine">
+          Mappify has stopped. Open it again from the Mappify icon to sign in.
+        </p>
+      )}
       <p className="fine">
         {local
           ? 'Sign in with the Spotify account you registered the app with. Your library stays on this computer.'

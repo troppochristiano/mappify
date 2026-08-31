@@ -201,8 +201,77 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* The import's own loader, once the cover above has gone. Centred on the map
+   the dock leaves rather than on the window, for the same reason .globe-tuned
+   is: viewport-centred it drifts under the dock on a narrow screen. Small and
+   over the map rather than covering it — the globe underneath is filling in as
+   this counts, which is the thing worth watching. */
+.import-loading {
+  position: absolute; z-index: 6;
+  top: 50%;
+  left: calc(50% + (var(--dock-w) + var(--dock-edge)) / 2);
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100% - var(--dock-w) - 48px));
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .45);
+  font-size: 12px; color: var(--muted); text-align: left;
+  pointer-events: none;
+  animation: import-in .32s ease both;
+}
+.import-loading b { display: block; color: var(--fg); font-size: 13px; margin-bottom: 3px; }
+.import-loading .spinner { width: 16px; height: 16px; margin-top: 2px; flex: none; }
+.import-loading .import-loading-text { min-width: 0; flex: 1; }
+/* The phase message is one line of server prose and can be any length. */
+.import-loading .import-loading-text > span {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.import-loading .bar { margin-top: 9px; }
+
+/* Dropping a shared library. The veil covers the map rather than sitting in a
+   corner: a drop target you have to aim at is one you can miss, and the whole
+   window accepts the file. */
+.drop-veil {
+  position: absolute; inset: 0; z-index: 9;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(0 0 0 / .55);
+  /* Nothing here may swallow the drag — the listeners are on the window, and an
+     element under the pointer that accepts pointer events changes which
+     dragleave fires. */
+  pointer-events: none;
+}
+.drop-veil-card {
+  padding: 22px 26px; text-align: center;
+  border: 1px dashed var(--accent); border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgb(0 0 0 / .5);
+}
+.drop-veil-card b { display: block; font-size: 15px; margin-bottom: 4px; }
+.drop-veil-card span { font-size: 12px; color: var(--muted); }
+
+/* The outcome, in the same place the import loader uses — and below it on the
+   rare occasion both are up at once. */
+.drop-note {
+  position: absolute; top: 16px; z-index: 6;
+  left: calc(50% + (var(--dock-w) + var(--dock-edge)) / 2);
+  transform: translateX(-50%);
+  max-width: min(420px, calc(100% - var(--dock-w) - 48px));
+  padding: 9px 13px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  font-size: 12px; color: var(--muted); text-align: center;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .45);
+  pointer-events: none;
+}
+@keyframes import-in {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 8px)); }
+  to   { opacity: 1; transform: translate(-50%, -50%); }
+}
 @media (prefers-reduced-motion: reduce) {
   .globe-loading { transition: none; }
+  /* Its arrival is decoration; the panel still appears, just without sliding. */
+  .import-loading { animation: none; }
   /* The ring is the only thing saying work is happening, so it stays — held
      still and dimmed rather than removed, which would leave the sentence
      sitting on its own looking finished. */
@@ -608,6 +677,18 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
    instructions you follow in order should not be centred text. */
 .steps { text-align: left; max-width: 52ch; margin: 4px 0; padding-left: 20px; color: var(--muted); line-height: 1.7; }
 .steps li { margin-bottom: 10px; }
+
+/* The one place a link has to look like a link. The global rule strips colour
+   and underline from every anchor, which is right for navigation chrome and
+   wrong here: this sentence's whole job is to send someone to the Spotify
+   dashboard, and a link the same grey as the paragraph around it does not get
+   clicked. */
+.steps a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.steps a:hover { color: var(--accent-hi); }
 .copyrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .copyrow code {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
@@ -650,6 +731,14 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
   .globe-tuned {
     left: 50%; bottom: 234px; max-width: calc(100% - 16px); font-size: 12px;
   }
+
+  /* The dock is edge to edge down here, so there is no off-centre map to
+     centre on — the middle of the screen is the middle of the map. */
+  .import-loading {
+    left: 50%; width: calc(100% - 16px);
+  }
+
+  .drop-note { left: 50%; max-width: calc(100% - 16px); }
 
   .panel-head h1 { font-size: 17px; }
 

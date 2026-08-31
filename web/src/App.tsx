@@ -6,7 +6,7 @@ import { api } from './lib/api'
 import { SignIn } from './components/SignIn'
 import { FirstRun } from './components/FirstRun'
 import { useHeartbeat } from './lib/usePresence'
-import { useImportStatus } from './lib/useImportStatus'
+import { useAutoImport, useImportStatus } from './lib/useImportStatus'
 
 function Header() {
   const { data } = useQuery({ queryKey: ['stats'], queryFn: api.stats })
@@ -44,11 +44,18 @@ export default function App() {
   // every route and regardless of which panel is open.
   useHeartbeat(setup.data?.local ?? false)
   useImportStatus()
+  // Nothing to import until there is a session and a Spotify to read; the hook
+  // decides, so it sits with the others above the early returns.
+  useAutoImport(setup.data)
 
   if (setup.isLoading) return <div className="wrap" />
   // Order matters: without a registered Spotify app there is no sign-in to offer.
   if (setup.data?.needsClientId) return <FirstRun redirectUri={setup.data.redirectUri} />
-  if (setup.data && !setup.data.signedIn) return <SignIn local={setup.data.local} />
+  // `isError` here means the API stopped answering, which after a quit is the
+  // expected state rather than a fault — the door can then say so instead of
+  // offering a button that cannot work.
+  if (setup.data && !setup.data.signedIn)
+    return <SignIn local={setup.data.local} stopped={setup.isError} />
 
   return (
     <div className={isGlobe ? 'wrap wrap--bleed' : 'wrap'}>

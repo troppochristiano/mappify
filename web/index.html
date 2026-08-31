@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- iOS ignores both the SVG icon and the manifest when someone adds the
+         app to their home screen, and falls back to a screenshot of the page if
+         this is missing. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- Makes the window an application rather than a page: its own name and
          icon in the taskbar, and an "Install" option for a Start-menu entry. -->

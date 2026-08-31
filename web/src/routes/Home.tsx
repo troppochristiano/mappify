@@ -1,5 +1,5 @@
 import { useState, useEffect, useDeferredValue, useMemo, useCallback, useRef } from 'react'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { api, type Artist, type PlaceLink, type PlaceTrack, type SearchScope } from '../lib/api'
 import {
@@ -24,6 +24,8 @@ import { Dock, type DockTab } from '../components/Dock'
 import { friends as friendsApi } from '../lib/friends'
 import { FRIEND_COLOUR, FRIEND_COLOURS } from '../components/globe/layers'
 import { useFilters, serialiseChips, rememberLabels, labelsQuery } from '../lib/filters'
+import { useImportStatus } from '../lib/useImportStatus'
+import { useFileDrop, SHARE_EXT } from '../lib/useFileDrop'
 import { useHotkeys } from '../lib/useHotkeys'
 import { countryBox } from '../components/globe/countryBox'
 
@@ -303,6 +305,52 @@ export function Home() {
     else localStorage.setItem(FRIEND_KEY, String(friendId))
   }, [friendId])
 
+  /**
+   * A library dropped onto the window, rather than found through the picker.
+   *
+   * Handled at the route and not inside ComparePanel: the panel is mounted only
+   * while its tab is open, and a file dragged onto the globe is the commonest
+   * way this will ever be done. Success lands you on the comparison — the drop
+   * said what you wanted, so making you then find the library in a list would be
+   * asking twice.
+   */
+  const qc = useQueryClient()
+  const [dropNote, setDropNote] = useState<string | null>(null)
+  const dropImport = useMutation({
+    mutationFn: friendsApi.import,
+    onMutate: () => setDropNote(null),
+    onSuccess: ({ friend, skipped }) => {
+      qc.invalidateQueries({ queryKey: ['friends'] })
+      setFriendId(friend.id)
+      setTab('compare')
+      setStack([])
+      setDockOpen(true)
+      setDropNote(
+        skipped
+          ? `${friend.display_name} imported — ${skipped} row${skipped === 1 ? '' : 's'} could not be read.`
+          : null
+      )
+    },
+    onError: (err: Error) => setDropNote(err.message),
+  })
+  // react-query keeps its mutate function stable, so the window listeners are
+  // bound once rather than rebound on every render of the route.
+  const { mutate: importDropped } = dropImport
+  const onDrop = useCallback((file: File) => importDropped(file), [importDropped])
+  const onWrongFile = useCallback(
+    (name: string) => setDropNote(`${name} is not a ${SHARE_EXT} file.`),
+    []
+  )
+  const dragging = useFileDrop(onDrop, onWrongFile)
+
+  // Long enough to read once, and gone on its own: there is no room on the globe
+  // for a message that needs dismissing.
+  useEffect(() => {
+    if (!dropNote) return
+    const id = setTimeout(() => setDropNote(null), 6000)
+    return () => clearTimeout(id)
+  }, [dropNote])
+
   /** Their rings on or off, without forgetting which library is loaded. */
   const [friendVisible, setFriendVisible] = useState<boolean>(
     () => localStorage.getItem(FRIEND_VISIBLE_KEY) !== '0'
@@ -462,6 +510,10 @@ export function Home() {
 
   const loading = !map.data || !globeReady
   const [loaderGone, setLoaderGone] = useState(false)
+
+  // The import that may be running behind the map. react-query dedupes on the
+  // shared key, so watching it here costs no extra polling.
+  const job = useImportStatus().data
   useEffect(() => {
     if (loading) return
     const id = setTimeout(() => setLoaderGone(true), LOADER_FADE)
@@ -1216,6 +1268,53 @@ export function Home() {
         >
           <span className="spinner" aria-hidden="true" />
           <span>{map.data ? 'Drawing the globe…' : 'Loading your library…'}</span>
+        </div>
+      )}
+
+      {/* The second wait, and the only one that can run for twenty minutes.
+          Deliberately not a cover like the one above it: the globe fills in
+          while the import works — the first dots land seconds after the first
+          placeable artist — and hiding that behind a curtain would hide the
+          best thing the app does. It waits for the globe's own loader to finish
+          fading so there are never two spinners.
+
+          It leaves before the job does. `origins-live` is the tail that looks
+          up whatever the bundled index could not match, at the one request a
+          second MusicBrainz asks for, and on a large library that is an hour of
+          a spinner sitting over a map that is already drawn and already worth
+          looking at. The work carries on; the options tab still reports it. */}
+      {job?.running && loaderGone && job.phase !== 'origins-live' && (
+        <div className="import-loading" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <div className="import-loading-text">
+            <b>Importing your library…</b>
+            <span>{job.message ?? job.phase}</span>
+            {job.total > 0 && (
+              <div className="bar">
+                <span style={{ width: `${Math.round((job.done / job.total) * 100)}%` }} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Only while something is actually being dragged over the window. A
+          permanent "drop a file here" target would be a sign on the globe
+          advertising a feature nobody is using at the time. */}
+      {dragging && (
+        <div className="drop-veil" role="presentation">
+          <div className="drop-veil-card">
+            <b>Drop to add this library</b>
+            <span>A {SHARE_EXT} file exported from someone else's Mappify.</span>
+          </div>
+        </div>
+      )}
+
+      {/* What came of it — a refused file, or an import that lost rows. Silence
+          on success is deliberate: the comparison opening is the confirmation. */}
+      {(dropNote || dropImport.isPending) && (
+        <div className="drop-note" role="status" aria-live="polite">
+          {dropImport.isPending ? 'Reading the library…' : dropNote}
         </div>
       )}
 

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  What makes a folder an application.
+
+  Mappify has no Cocoa in it — the executable below is a shell script, and the
+  window you end up looking at belongs to Chrome. This file is what buys the
+  rest: an icon in the Finder and the Dock, a name that is not the script's
+  filename, and a double-click that starts it without opening Terminal. The
+  .command it replaces on this platform could have none of those.
+
+  __VERSION__ is substituted at build time from package.json, so the version the
+  Finder reports cannot drift from the one the app is.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Mappify</string>
+  <key>CFBundleDisplayName</key>
+  <string>Mappify</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.troppochristiano.mappify</string>
+  <key>CFBundleExecutable</key>
+  <string>Mappify</string>
+  <!-- No extension on purpose: the Finder appends .icns itself. -->
+  <key>CFBundleIconFile</key>
+  <string>Mappify</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <!-- Big Sur is where the arm64 Node this ships alongside begins. -->
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

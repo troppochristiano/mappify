@@ -15,6 +15,9 @@ param(
   [string]$Arguments = '',
   [string]$WorkDir = '',
   [string]$Description = '',
+  # Defaults to the target, which is how this behaved before there was an icon
+  # to point at: node.exe carries its own.
+  [string]$Icon = '',
   [int]$ShowCmd = 1
 )
 $ErrorActionPreference = 'Stop'
@@ -60,7 +63,7 @@ public interface IPersistFile {
 }
 
 public static class Shortcut {
-  public static void Create(string lnk, string target, string args, string workDir, string desc, int showCmd) {
+  public static void Create(string lnk, string target, string args, string workDir, string desc, int showCmd, string icon) {
     var obj = new ShellLinkObj();
     var link = (IShellLinkW)obj;
     link.SetPath(target);
@@ -68,7 +71,11 @@ public static class Shortcut {
     if (!string.IsNullOrEmpty(workDir)) link.SetWorkingDirectory(workDir);
     if (!string.IsNullOrEmpty(desc)) link.SetDescription(desc);
     link.SetShowCmd(showCmd);
-    link.SetIconLocation(target, 0);
+    // An absolute path, because that is all a .lnk can hold: SetRelativePath
+    // repairs the target and the working directory when the folder moves, and
+    // has nothing to say about the icon. A moved bundle falls back to the
+    // target's own icon rather than showing nothing.
+    link.SetIconLocation(string.IsNullOrEmpty(icon) ? target : icon, 0);
     // The whole point: the shell falls back to this when the absolute path is
     // gone, which it always is once the zip has been unpacked somewhere else.
     link.SetRelativePath(lnk, 0);
@@ -80,5 +87,6 @@ public static class Shortcut {
 $lnkPath = [System.IO.Path]::GetFullPath($Lnk)
 $targetPath = [System.IO.Path]::GetFullPath($Target)
 $dir = if ($WorkDir) { [System.IO.Path]::GetFullPath($WorkDir) } else { '' }
-[Shortcut]::Create($lnkPath, $targetPath, $Arguments, $dir, $Description, $ShowCmd)
+$iconPath = if ($Icon) { [System.IO.Path]::GetFullPath($Icon) } else { '' }
+[Shortcut]::Create($lnkPath, $targetPath, $Arguments, $dir, $Description, $ShowCmd, $iconPath)
 "wrote $lnkPath"

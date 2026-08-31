@@ -1,0 +1,35 @@
+#!/bin/bash
+# The whole of the macOS launcher.
+#
+# Everything the app is lives in ../Resources/app, so the bundle is one thing
+# that can be dragged to Applications and still work — which is the reason for
+# doing this at all. The .command it replaces sat beside its own payload, and
+# moving it anywhere broke it silently.
+#
+# There is no Terminal window here, so nothing can be printed at anyone. The
+# server's output goes to a log instead, which is also the only place to look
+# when it fails to start. Stopping it is the Quit button in the app, or closing
+# the last tab, or quitting this from the Dock.
+
+here="$(cd "$(dirname "$0")" && pwd)"
+app="$here/../Resources/app"
+cd "$app" || exit 1
+
+log="$HOME/Library/Logs/Mappify.log"
+mkdir -p "$(dirname "$log")"
+
+if [[ -x "runtime/bin/node" ]]; then
+  NODE="runtime/bin/node"
+elif command -v node >/dev/null 2>&1; then
+  NODE="node"
+else
+  # An alert rather than an echo: there is no console to echo into, and an app
+  # that does nothing at all on a double-click is indistinguishable from broken.
+  osascript -e 'display alert "Mappify needs Node.js" message "It is a free download. Opening nodejs.org — install the LTS version, then open Mappify again."' >/dev/null 2>&1
+  open https://nodejs.org
+  exit 1
+fi
+
+# exec, so this process becomes the server rather than waiting beside it: one
+# process in the Dock, and quitting it is quitting Mappify.
+exec "$NODE" tools/start.js >>"$log" 2>&1

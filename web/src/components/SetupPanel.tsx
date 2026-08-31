@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type SetupInfo } from '../lib/api'
 import { useImportStatus } from '../lib/useImportStatus'
 import { SpotifyApp } from './SpotifyApp'
 
@@ -31,7 +31,32 @@ export function SetupPanel() {
     },
   })
   // No onSuccess invalidation: the server is gone, so there is nothing to refetch.
-  const quit = useMutation({ mutationFn: api.quit })
+  /**
+   * Sign out, then stop the server — in that order, and both before the process
+   * goes.
+   *
+   * Quitting used to leave the tab on a dead app telling you to close it, which
+   * is a screen whose only content is an instruction. Ending the session first
+   * means the tab has somewhere honest to land, and that the next launch — or
+   * anyone else who opens this app on this machine — starts at the door rather
+   * than inside somebody's library.
+   *
+   * The optimistic write is what actually moves the screen: the server is gone a
+   * moment later, so the setup query it would normally answer will never answer
+   * again. Nothing is lost by assuming success, because the alternative to a
+   * signed-out screen here is no screen at all.
+   */
+  const quit = useMutation({
+    mutationFn: async () => {
+      await api.logout()
+      return api.quit()
+    },
+    onSuccess: () => {
+      qc.setQueryData(['setup'], (old: SetupInfo | undefined) =>
+        old && { ...old, signedIn: false, user: null, hasLibrary: false, spotify: { connected: false } }
+      )
+    },
+  })
 
   const startImport = useMutation({
     mutationFn: api.startImport,
@@ -168,7 +193,7 @@ export function SetupPanel() {
             unless an import is still running. This is the impatient version.
           </p>
           <button className="ghost" onClick={() => quit.mutate()} disabled={quit.isPending}>
-            {quit.isSuccess ? 'stopped — you can close this tab' : 'Quit Mappify'}
+            {quit.isSuccess ? 'stopped' : 'Quit Mappify'}
           </button>
         </section>
       )}

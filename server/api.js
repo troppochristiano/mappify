@@ -22,7 +22,13 @@ import {
   clientIdSource,
   REDIRECT_URI,
 } from './auth.js';
-import { userForRequest, endSession, sessionCookie, clearCookie } from './session.js';
+import {
+  userForRequest,
+  endSession,
+  sessionCookie,
+  clearCookie,
+  pendingAuth,
+} from './session.js';
 import { serveStatic, hasBuiltApp } from './static.js';
 import { CITY, COUNTRY, ARTIST_PLACE, ARTIST_IMAGE, PLACE_SUBTREE } from './sql.js';
 import { parseFilters, filterSql, filterTargets } from './filters.js';
@@ -1509,7 +1515,10 @@ const server = http.createServer(async (req, res) => {
 // it every time you closed a tab.
 if (LOOPBACK && process.env.MAPPIFY_AUTOQUIT !== '0') {
   armAutoQuit({
-    isBusy: () => anyRunning() || inFlight > 0,
+    // A sign-in in flight counts as work: the tab has navigated to Spotify and
+    // said goodbye on its way out, so nothing else here knows anyone is coming
+    // back.
+    isBusy: () => anyRunning() || inFlight > 0 || pendingAuth(),
     onQuit: () => {
       console.log('no browser tab for a while — stopping');
       process.exit(0); // 0, or quitting leaves an error on the console behind it

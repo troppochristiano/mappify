@@ -28,8 +28,23 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
-const OUT = path.join(ROOT, 'out', 'Mappify');
 const WINDOWS = process.platform === 'win32';
+const MAC = process.platform === 'darwin';
+
+/**
+ * What gets packaged, and where the app itself sits inside it.
+ *
+ * On macOS these are two different places. An .app is a folder the Finder treats
+ * as a single object, and dragging it to Applications moves only what is inside
+ * it — so a payload sitting *beside* the bundle would be left behind, and the
+ * app would work once and never again. Everything therefore lives in
+ * Contents/Resources/app, and the launcher inside the bundle walks down to it.
+ *
+ * Everywhere else the two are the same folder, which is the layout that has
+ * always shipped: a directory of parts with a launcher among them.
+ */
+const OUT = MAC ? path.join(ROOT, 'out', 'Mappify.app') : path.join(ROOT, 'out', 'Mappify');
+const APP = MAC ? path.join(OUT, 'Contents', 'Resources', 'app') : OUT;
 
 const step = (msg) => console.log(`\n\x1b[1m${msg}\x1b[0m`);
 const note = (msg) => console.log(`  ${msg}`);
@@ -62,17 +77,17 @@ run('npm', ['run', 'build']);
 
 step('Clearing out/');
 fs.rmSync(path.join(ROOT, 'out'), { recursive: true, force: true });
-fs.mkdirSync(OUT, { recursive: true });
+fs.mkdirSync(APP, { recursive: true });
 
 step('Copying the app');
 for (const entry of ['server', 'tools', 'package.json', 'README.md']) {
   const from = path.join(ROOT, entry);
-  if (fs.existsSync(from)) copyDir(from, path.join(OUT, entry));
+  if (fs.existsSync(from)) copyDir(from, path.join(APP, entry));
 }
-fs.mkdirSync(path.join(OUT, 'web'), { recursive: true });
-copyDir(path.join(ROOT, 'web', 'dist'), path.join(OUT, 'web', 'dist'));
+fs.mkdirSync(path.join(APP, 'web'), { recursive: true });
+copyDir(path.join(ROOT, 'web', 'dist'), path.join(APP, 'web', 'dist'));
 if (fs.existsSync(path.join(ROOT, 'node_modules'))) {
-  copyDir(path.join(ROOT, 'node_modules'), path.join(OUT, 'node_modules'));
+  copyDir(path.join(ROOT, 'node_modules'), path.join(APP, 'node_modules'));
 }
 
 step('Copying the runtime');
@@ -80,12 +95,12 @@ step('Copying the runtime');
 // nothing to double-click — still testable by running start.js, but not what
 // people download.
 if (WINDOWS) {
-  fs.mkdirSync(path.join(OUT, 'runtime'), { recursive: true });
-  fs.copyFileSync(process.execPath, path.join(OUT, 'runtime', 'node.exe'));
+  fs.mkdirSync(path.join(APP, 'runtime'), { recursive: true });
+  fs.copyFileSync(process.execPath, path.join(APP, 'runtime', 'node.exe'));
 } else {
-  fs.mkdirSync(path.join(OUT, 'runtime', 'bin'), { recursive: true });
-  fs.copyFileSync(process.execPath, path.join(OUT, 'runtime', 'bin', 'node'));
-  fs.chmodSync(path.join(OUT, 'runtime', 'bin', 'node'), 0o755);
+  fs.mkdirSync(path.join(APP, 'runtime', 'bin'), { recursive: true });
+  fs.copyFileSync(process.execPath, path.join(APP, 'runtime', 'bin', 'node'));
+  fs.chmodSync(path.join(APP, 'runtime', 'bin', 'node'), 0o755);
 }
 note(`node ${process.version}`);
 
@@ -97,14 +112,44 @@ const index = ['data/index.db', '.mbdump/mb-index.db']
   .map((p) => path.join(ROOT, p))
   .find((p) => fs.existsSync(p));
 if (index) {
-  fs.copyFileSync(index, path.join(OUT, 'index.db'));
+  fs.copyFileSync(index, path.join(APP, 'index.db'));
   note(`${path.relative(ROOT, index)} — ${Math.round(fs.statSync(index).size / 1e6)} MB`);
 } else {
   note('none found — imports will fall back to MusicBrainz at one request per second.');
   note('Build one with:  node tools/build-bundle-index.js');
 }
 
-step('Making the shortcut');
+step('Copying the icon');
+// Windows cannot take the SVG the browser uses, and neither a .lnk nor a desktop
+// entry can point inside web/dist and be understood — so the icon travels beside
+// the launcher in the form each platform reads. Built by tools/build-icon.js and
+// committed; missing only if it was never made.
+//
+// macOS gets neither: a .command is a plain script, and Finder will not draw an
+// icon for one without a .app bundle around it.
+const ico = path.join(ROOT, 'web', 'public', 'favicon.ico');
+const png = path.join(ROOT, 'web', 'public', 'icon-512.png');
+const icns = path.join(ROOT, 'assets', 'Mappify.icns');
+const source = WINDOWS ? ico : MAC ? icns : png;
+const shipIcon = fs.existsSync(source);
+if (!shipIcon) {
+  note(`${path.relative(ROOT, source)} is missing — the launcher will use a generic icon.`);
+  note('Build it with:  node tools/build-icon.js');
+} else if (WINDOWS) {
+  fs.copyFileSync(ico, path.join(OUT, 'Mappify.ico'));
+  note('Mappify.ico');
+} else if (MAC) {
+  // Named to match CFBundleIconFile, which is what the Finder looks up.
+  const res = path.join(OUT, 'Contents', 'Resources');
+  fs.mkdirSync(res, { recursive: true });
+  fs.copyFileSync(icns, path.join(res, 'Mappify.icns'));
+  note('Contents/Resources/Mappify.icns');
+} else {
+  fs.copyFileSync(png, path.join(OUT, 'Mappify.png'));
+  note('Mappify.png');
+}
+
+step(MAC ? 'Making the app bundle' : 'Making the shortcut');
 // A .lnk to the Node beside it, not a launcher of our own: Defender's ML model
 // began blocking the Rust one as Wacatac!ml with no way through, and a build
 // containing no unsigned binary of ours has nothing to block. See
@@ -128,6 +173,7 @@ if (WINDOWS) {
     'tools\\start.js',
     '-WorkDir',
     OUT,
+    ...(shipIcon ? ['-Icon', path.join(OUT, 'Mappify.ico')] : []),
     '-Description',
     'Mappify — a globe of your music',
     '-ShowCmd',
@@ -140,22 +186,38 @@ if (WINDOWS) {
     note('');
     note('  cd out\\Mappify && runtime\\node.exe tools\\start.js');
   }
+} else if (MAC) {
+  // Info.plist and the launcher script are kept as real files under mac/ rather
+  // than written from here, so the thing that ships is the thing you can read —
+  // and so this build and the release workflow cannot drift apart by editing one
+  // heredoc and not the other.
+  const template = path.join(ROOT, 'mac', 'Mappify.app', 'Contents');
+  copyDir(path.join(template, 'MacOS'), path.join(OUT, 'Contents', 'MacOS'));
+  // The exec bit does not always survive a checkout on every platform, and a
+  // bundle whose executable is not executable fails with "the application can
+  // not be opened" and no reason given.
+  fs.chmodSync(path.join(OUT, 'Contents', 'MacOS', 'Mappify'), 0o755);
+  const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  fs.writeFileSync(
+    path.join(OUT, 'Contents', 'Info.plist'),
+    fs.readFileSync(path.join(template, 'Info.plist'), 'utf8').replaceAll('__VERSION__', version)
+  );
+  note(`Mappify.app — version ${version}`);
 } else {
   fs.copyFileSync(path.join(ROOT, 'Mappify.command'), path.join(OUT, 'Mappify.command'));
   fs.chmodSync(path.join(OUT, 'Mappify.command'), 0o755);
   // Linux file managers want a desktop entry, and will not offer to run one that
-  // is not executable. macOS has no use for it.
-  if (process.platform === 'linux') {
-    fs.copyFileSync(path.join(ROOT, 'Mappify.desktop'), path.join(OUT, 'Mappify.desktop'));
-    fs.chmodSync(path.join(OUT, 'Mappify.desktop'), 0o755);
-  }
+  // is not executable.
+  fs.copyFileSync(path.join(ROOT, 'Mappify.desktop'), path.join(OUT, 'Mappify.desktop'));
+  fs.chmodSync(path.join(OUT, 'Mappify.desktop'), 0o755);
 }
 
 // ---------------------------------------------------------------------------
 
 step('Done');
 note(OUT);
-if (!WINDOWS) note('Right-click Mappify.command → Open');
+if (MAC) note('Right-click Mappify.app → Open (once — Gatekeeper)');
+else if (!WINDOWS) note('Right-click Mappify.command → Open');
 else if (shortcut) note('Double-click Mappify');
 else note(String.raw`runtime\node.exe tools\start.js   (this build has no shortcut)`);
 console.log(

@@ -96,21 +96,39 @@ jobs:
       - name: Assemble
         shell: bash
         run: |
-          mkdir -p out/Mappify
-          cp -r server tools web/dist runtime package.json README.md out/Mappify/
-          mkdir -p out/Mappify/web && mv out/Mappify/dist out/Mappify/web/dist
-          [ -d node_modules ] && cp -r node_modules out/Mappify/ || true
-          [ -f index.db ] && cp index.db out/Mappify/ || true
-          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
-            cp Mappify.command out/Mappify/
-            chmod +x out/Mappify/Mappify.command
+          # macOS ships an .app, which is a folder the Finder treats as one
+          # object — so everything must live *inside* it, or dragging it to
+          # Applications leaves the payload behind and the app opens once.
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            APP=out/Mappify.app
+            PAYLOAD=$APP/Contents/Resources/app
+          else
+            APP=out/Mappify
+            PAYLOAD=$APP
           fi
-          # .command is the extension macOS opens in Terminal; Linux desktops
-          # want an entry file instead, and a file manager will not offer to run
-          # one that is not executable.
+          mkdir -p "$PAYLOAD"
+          cp -r server tools web/dist runtime package.json README.md "$PAYLOAD/"
+          mkdir -p "$PAYLOAD/web" && mv "$PAYLOAD/dist" "$PAYLOAD/web/dist"
+          [ -d node_modules ] && cp -r node_modules "$PAYLOAD/" || true
+          [ -f index.db ] && cp index.db "$PAYLOAD/" || true
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            cp -r mac/Mappify.app/Contents/MacOS "$APP/Contents/MacOS"
+            # The exec bit does not reliably survive a checkout, and a bundle
+            # whose executable is not executable fails with "the application can
+            # not be opened" and no reason given.
+            chmod +x "$APP/Contents/MacOS/Mappify"
+            mkdir -p "$APP/Contents/Resources"
+            cp assets/Mappify.icns "$APP/Contents/Resources/Mappify.icns"
+            VERSION=$(node -p "require('./package.json').version")
+            sed "s/__VERSION__/$VERSION/g" mac/Mappify.app/Contents/Info.plist > "$APP/Contents/Info.plist"
+          fi
+          # Linux keeps the script-and-desktop-entry pair: .command is what the
+          # entry's Exec line runs, and a file manager will not offer to run an
+          # entry that is not executable.
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            cp Mappify.desktop out/Mappify/
-            chmod +x out/Mappify/Mappify.desktop
+            cp Mappify.command Mappify.desktop out/Mappify/
+            chmod +x out/Mappify/Mappify.command out/Mappify/Mappify.desktop
+            cp web/public/icon-512.png out/Mappify/Mappify.png
           fi
 
       # A shortcut to the Node we ship, rather than a launcher of our own.
@@ -128,11 +146,13 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          Copy-Item web/public/favicon.ico out/Mappify/Mappify.ico
           ./tools/make-shortcut.ps1 `
             -Lnk       out/Mappify/Mappify.lnk `
             -Target    out/Mappify/runtime/node.exe `
             -Arguments 'tools\start.js' `
             -WorkDir   out/Mappify `
+            -Icon      out/Mappify/Mappify.ico `
             -Description 'Mappify — a globe of your music' `
             -ShowCmd   7
 
@@ -142,6 +162,10 @@ jobs:
           cd out
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             7z a -tzip "../mappify-${{ matrix.name }}.zip" Mappify >/dev/null
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            # The bundle at the top of the zip, so unzipping gives an app to drag
+            # rather than a folder to open first. -y keeps symlinks as symlinks.
+            zip -qry "../mappify-${{ matrix.name }}.zip" Mappify.app
           else
             zip -qr "../mappify-${{ matrix.name }}.zip" Mappify
           fi

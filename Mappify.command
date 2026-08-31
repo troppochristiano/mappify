@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Double-click this to start Mappify. (macOS and Linux.)
+# Double-click this to start Mappify. (Linux.)
 #
-# .command is the extension macOS opens in Terminal on a double-click. Linux
-# desktops generally offer "Run in Terminal" for the same file.
+# Linux desktops offer "Run in Terminal" for this file, and Mappify.desktop
+# beside it runs the same script from a file manager or an application menu.
 #
-# The first launch on macOS is refused by Gatekeeper, because this was
-# downloaded rather than written here: right-click it and choose Open, and the
-# dialog gains an Open button. That is once, not every time.
+# macOS used to be the other half of this file's job — .command is the extension
+# it opens in Terminal — and now ships a Mappify.app instead: a bundle can carry
+# an icon and a name, start without a Terminal window behind it, and be dragged
+# to Applications without leaving its own parts behind. See mac/Mappify.app.
+#
+# Kept working on macOS all the same, because a checkout is not a download: it
+# is still the shortest way to start the app from a clone.
 
 cd "$(dirname "$0")"
 
