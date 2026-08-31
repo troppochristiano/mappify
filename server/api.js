@@ -845,11 +845,14 @@ const routes = {
     const mineOnlyPlaylists = scope === 'theirs' ? [] : null;
 
     // Nothing typed yet: the panel's resting state is your library, which is
-    // what the source dropdown used to be for.
+    // what the source dropdown used to be for — plus a friend's places when a
+    // scope of theirs is selected, since a shared library has no playlists to
+    // rest on and would otherwise answer with nothing at all. See
+    // `friendTopPlaces`.
     if (!q) {
       return {
         artists: [],
-        places: [],
+        places: scope === 'mine' ? [] : friendTopPlaces(friend, 20),
         playlists: mineOnlyPlaylists ?? playlists(null, 20),
         ...scopeNotes(scope, friend),
       };
@@ -1225,6 +1228,41 @@ function friendResults(friendId, q, limit) {
 
   const theirs = (row) => ({ ...row, owner: 'theirs' });
   return { artists: artists.map(theirs), places: places.map(theirs) };
+}
+
+/**
+ * A friend's library with nothing typed into the box.
+ *
+ * The resting state for your own library is your playlists — things you can chip
+ * without having to know a name. A shared library carries none, so the friend
+ * scope used to answer with three empty arrays: no rows, and a note about
+ * playlists left standing on its own, which read as the reason the panel was
+ * blank without being it.
+ *
+ * Places rather than artists, because of what a row can do. A friend's artist
+ * can be neither chipped nor opened — chips filter your globe and the artist
+ * page reads your library — so a list of them is a list of disabled buttons.
+ * A place can be flown to whoever it belongs to, which makes their places the
+ * one part of a shared library worth offering before a search narrows it.
+ *
+ * Ordered by artists rather than tracks: this is a list to pick a place off,
+ * and how much of their library comes from somewhere is the better answer to
+ * "which of these is worth a look" than how many tracks it adds up to.
+ *
+ * Coordinates required, for the same reason the query over your own places
+ * demands them — a place the globe cannot draw is a row that cannot be flown to.
+ */
+function friendTopPlaces(friendId, limit) {
+  if (friendId == null) return [];
+  return all(
+    `SELECT qid, name, country_iso, tracks, artists
+       FROM friend_places
+      WHERE friend_id = ? AND lat IS NOT NULL
+      ORDER BY artists DESC, tracks DESC, name COLLATE NOCASE
+      LIMIT ?`,
+    friendId,
+    limit
+  ).map((row) => ({ ...row, owner: 'theirs' }));
 }
 
 /**
