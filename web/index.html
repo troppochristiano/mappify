@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- The query string is the only reliable way to change an icon.
+         Chrome keeps favicons in a database of its own, keyed by URL and
+         refreshed on a schedule measured in days — so replacing the file at the
+         same path leaves every existing profile showing the old one for a week,
+         however hard anyone reloads. Bump this when the artwork changes. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
     <!-- iOS ignores both the SVG icon and the manifest when someone adds the
          app to their home screen, and falls back to a screenshot of the page if
          this is missing. -->

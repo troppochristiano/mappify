@@ -36,12 +36,61 @@ const OUT = path.join(ROOT, 'web', 'public', 'favicon.ico');
  */
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
 
-// Rendered from the vector at each size, not resized from one big raster: a
-// continent outline thinned by a bilinear downscale to 16px turns to mush.
-const images = [];
-for (const size of SIZES) {
-  images.push({ size, png: await sharp(SRC, { density: 384 }).resize(size, size).png().toBuffer() });
+
+/**
+ * One image, in the format the Windows shell will actually draw.
+ *
+ * An .ico may hold PNG or BMP, and Explorer reads PNG reliably only at 256. At
+ * the sizes it draws most — the 16 in a list, the 32 on the taskbar — a PNG
+ * entry is widely mishandled and shows as nothing at all, which is exactly what
+ * a shortcut with no icon looks like. So everything below 256 is written as an
+ * uncompressed DIB, and only the 256 stays a PNG, which is what every icon
+ * toolchain does and for this reason.
+ */
+async function encode(size) {
+  if (size === 256) {
+    return { data: await sharp(SRC, { density: 384 }).resize(size, size).png().toBuffer(), png: true };
+  }
+
+  const rgba = await sharp(SRC, { density: 384 })
+    .resize(size, size)
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+
+  // The AND mask is a leftover from icons that had no alpha channel. A 32-bit
+  // DIB carries its own transparency and the mask is ignored — but the header
+  // still declares double height for it, and leaving the bytes out gives Windows
+  // a truncated image.
+  const maskStride = Math.ceil(size / 32) * 4;
+  const header = Buffer.alloc(40);
+  header.writeUInt32LE(40, 0);
+  header.writeInt32LE(size, 4);
+  header.writeInt32LE(size * 2, 8); // XOR image and AND mask stacked
+  header.writeUInt16LE(1, 12); // planes
+  header.writeUInt16LE(32, 14); // bits per pixel
+  header.writeUInt32LE(0, 16); // BI_RGB — uncompressed
+  header.writeUInt32LE(size * size * 4 + maskStride * size, 20);
+
+  // Bottom-up, and BGRA rather than RGBA: both are what a DIB means by a row.
+  const xor = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    const from = (size - 1 - y) * size * 4;
+    for (let x = 0; x < size; x++) {
+      const s = from + x * 4;
+      const d = (y * size + x) * 4;
+      xor[d] = rgba[s + 2];
+      xor[d + 1] = rgba[s + 1];
+      xor[d + 2] = rgba[s];
+      xor[d + 3] = rgba[s + 3];
+    }
+  }
+
+  return { data: Buffer.concat([header, xor, Buffer.alloc(maskStride * size)]), png: false };
 }
+
+const images = [];
+for (const size of SIZES) images.push({ size, ...(await encode(size)) });
 
 const HEADER = 6;
 const ENTRY = 16;
@@ -51,7 +100,7 @@ dir.writeUInt16LE(1, 2); // 1 = icon, 2 would be a cursor
 dir.writeUInt16LE(images.length, 4);
 
 let offset = dir.length;
-images.forEach(({ size, png }, i) => {
+images.forEach(({ size, data }, i) => {
   const at = HEADER + ENTRY * i;
   // 256 is written as 0: the field is one byte, so the largest size an icon may
   // have is the one value it cannot hold.
@@ -61,14 +110,16 @@ images.forEach(({ size, png }, i) => {
   dir.writeUInt8(0, at + 3); // reserved
   dir.writeUInt16LE(1, at + 4); // colour planes
   dir.writeUInt16LE(32, at + 6); // bits per pixel
-  dir.writeUInt32LE(png.length, at + 8);
+  dir.writeUInt32LE(data.length, at + 8);
   dir.writeUInt32LE(offset, at + 12);
-  offset += png.length;
+  offset += data.length;
 });
 
-fs.writeFileSync(OUT, Buffer.concat([dir, ...images.map((i) => i.png)]));
+fs.writeFileSync(OUT, Buffer.concat([dir, ...images.map((i) => i.data)]));
 console.log(
-  `${path.relative(ROOT, OUT)} — ${SIZES.join(', ')} — ${Math.round(fs.statSync(OUT).size / 1024)} KB`
+  `${path.relative(ROOT, OUT)} — ${images.map((i) => `${i.size}${i.png ? ' png' : ''}`).join(', ')} — ${Math.round(
+    fs.statSync(OUT).size / 1024
+  )} KB`
 );
 
 // ---------------------------------------------------------------------------

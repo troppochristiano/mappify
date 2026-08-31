@@ -4,3 +4,10 @@
 *.sh      text eol=lf
 *.service text eol=lf
 *.command text eol=lf
+
+# The macOS launcher has no extension, so none of the rules above reach it — and
+# it is the one file in the bundle that must not arrive with CRLF: a shell script
+# whose shebang ends in ^M fails with "bad interpreter" and the app will not open.
+# Committed correctly today only because this machine has core.autocrlf=true,
+# which is a setting and not a guarantee.
+mac/Mappify.app/Contents/MacOS/Mappify text eol=lf
