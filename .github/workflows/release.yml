@@ -172,8 +172,14 @@ jobs:
             $env:PATH = "$env:PATH;$nsis"
           }
           $version = node -p "require('./package.json').version"
-          $out = "mappify-setup-${{ matrix.name }}.exe"
-          makensis "/DVERSION=$version" "/DPAYLOAD=out\Mappify" "/DICON=web\public\favicon.ico" "/DOUTFILE=$out" windows/installer.nsi
+          # Absolute, every one of them: makensis resolves a relative path
+          # against the directory of the .nsi file, not the working directory,
+          # so anything relative here is looked for under windows/.
+          $root = (Get-Location).Path
+          $icon = Join-Path $root "web\public\favicon.ico"
+          $payload = Join-Path $root "out\Mappify"
+          $out = Join-Path $root "mappify-setup-${{ matrix.name }}.exe"
+          makensis "/DVERSION=$version" "/DPAYLOAD=$payload" "/DICON=$icon" "/DOUTFILE=$out" windows/installer.nsi
           if (-not (Test-Path $out)) { throw "makensis produced no installer" }
 
       - name: Package

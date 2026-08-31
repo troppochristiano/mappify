@@ -16,6 +16,11 @@
 ; read-only to everything but an installer, and the data directory logic in
 ; server/db.js exists because of exactly that.
 ;
+; Every path is passed in as an absolute one, and has to be: makensis resolves a
+; relative path against the directory of the .nsi file rather than the working
+; directory, so a path like web\public\favicon.ico is looked for under
+; windows/ and the build fails with "can't open file" on a file that is there.
+;
 ; Built by .github/workflows/release.yml, which passes every path in:
 ;   makensis /DVERSION=.. /DPAYLOAD=out\Mappify /DICON=.. /DOUTFILE=.. installer.nsi
 
@@ -35,9 +40,8 @@ BrandingText "${APP} ${VERSION}"
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${APP}"
-VIAddVersionKey "FileDescription" "${APP} — a globe of your music"
+VIAddVersionKey "FileDescription" "${APP} - a globe of your music"
 VIAddVersionKey "FileVersion" "${VERSION}"
-VIAddVersionKey "LegalCopyright" ""
 
 ; The globe, on the installer and the uninstaller both.
 !define MUI_ICON "${ICON}"
@@ -62,10 +66,8 @@ Section "Install"
   ; with paths that exist.
   File /r /x "Mappify.lnk" "${PAYLOAD}\*.*"
 
-  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" \
-    "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} — a globe of your music"
-  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" \
-    "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} — a globe of your music"
+  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} - a globe of your music"
+  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} - a globe of your music"
 
   WriteRegStr HKCU "Software\${APP}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${REGKEY}" "DisplayName" "${APP}"
