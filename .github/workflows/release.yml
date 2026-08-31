@@ -128,7 +128,8 @@ jobs:
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
             cp Mappify.command Mappify.desktop out/Mappify/
             chmod +x out/Mappify/Mappify.command out/Mappify/Mappify.desktop
-            cp web/public/icon-512.png out/Mappify/Mappify.png
+            mkdir -p out/Mappify/resources
+            cp web/public/icon-512.png out/Mappify/resources/Mappify.png
           fi
 
       # A shortcut to the Node we ship, rather than a launcher of our own.
@@ -146,13 +147,14 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Copy-Item web/public/favicon.ico out/Mappify/Mappify.ico
+          New-Item -ItemType Directory -Force out/Mappify/resources | Out-Null
+          Copy-Item web/public/favicon.ico out/Mappify/resources/Mappify.ico
           ./tools/make-shortcut.ps1 `
             -Lnk       out/Mappify/Mappify.lnk `
             -Target    out/Mappify/runtime/node.exe `
             -Arguments 'tools\start.js' `
             -WorkDir   out/Mappify `
-            -Icon      out/Mappify/Mappify.ico `
+            -Icon      out/Mappify/resources/Mappify.ico `
             -Description 'Mappify — a globe of your music' `
             -ShowCmd   7
 

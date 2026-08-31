@@ -71,14 +71,17 @@ public static class Shortcut {
     if (!string.IsNullOrEmpty(workDir)) link.SetWorkingDirectory(workDir);
     if (!string.IsNullOrEmpty(desc)) link.SetDescription(desc);
     link.SetShowCmd(showCmd);
-    // An absolute path, because that is all a .lnk can hold: SetRelativePath
-    // repairs the target and the working directory when the folder moves, and
-    // has nothing to say about the icon. A moved bundle falls back to the
-    // target's own icon rather than showing nothing.
-    link.SetIconLocation(string.IsNullOrEmpty(icon) ? target : icon, 0);
-    // The whole point: the shell falls back to this when the absolute path is
-    // gone, which it always is once the zip has been unpacked somewhere else.
+    // Before the icon, not after. Setting the relative path last discards the
+    // icon location that was set before it — the link saves with a blank icon
+    // and no error, which is a thing you can only find by rendering the icon the
+    // shell actually draws and looking at the pixels.
+    //
+    // The relative path is what the shell repairs the target and working
+    // directory from once the zip has been unpacked somewhere new.
     link.SetRelativePath(lnk, 0);
+    // Absolute, because that is all the icon field can hold — nothing repairs
+    // it, which is why tools/start.js rewrites this on first launch.
+    link.SetIconLocation(string.IsNullOrEmpty(icon) ? target : icon, 0);
     ((IPersistFile)obj).Save(lnk, true);
   }
 }

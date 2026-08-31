@@ -136,8 +136,13 @@ if (!shipIcon) {
   note(`${path.relative(ROOT, source)} is missing — the launcher will use a generic icon.`);
   note('Build it with:  node tools/build-icon.js');
 } else if (WINDOWS) {
-  fs.copyFileSync(ico, path.join(OUT, 'Mappify.ico'));
-  note('Mappify.ico');
+  // In a subfolder, not beside the launcher. What someone sees on unzipping
+  // should be one obvious thing to open; an icon file sitting next to the
+  // shortcut, with the same name and a similar picture, is a second thing that
+  // looks equally openable and does nothing.
+  fs.mkdirSync(path.join(OUT, 'resources'), { recursive: true });
+  fs.copyFileSync(ico, path.join(OUT, 'resources', 'Mappify.ico'));
+  note('resources/Mappify.ico');
 } else if (MAC) {
   // Named to match CFBundleIconFile, which is what the Finder looks up.
   const res = path.join(OUT, 'Contents', 'Resources');
@@ -145,8 +150,9 @@ if (!shipIcon) {
   fs.copyFileSync(icns, path.join(res, 'Mappify.icns'));
   note('Contents/Resources/Mappify.icns');
 } else {
-  fs.copyFileSync(png, path.join(OUT, 'Mappify.png'));
-  note('Mappify.png');
+  fs.mkdirSync(path.join(OUT, 'resources'), { recursive: true });
+  fs.copyFileSync(png, path.join(OUT, 'resources', 'Mappify.png'));
+  note('resources/Mappify.png');
 }
 
 step(MAC ? 'Making the app bundle' : 'Making the shortcut');
@@ -173,7 +179,7 @@ if (WINDOWS) {
     'tools\\start.js',
     '-WorkDir',
     OUT,
-    ...(shipIcon ? ['-Icon', path.join(OUT, 'Mappify.ico')] : []),
+    ...(shipIcon ? ['-Icon', path.join(OUT, 'resources', 'Mappify.ico')] : []),
     '-Description',
     'Mappify — a globe of your music',
     '-ShowCmd',

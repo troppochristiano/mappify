@@ -159,36 +159,6 @@ const openBrowser = () => {
  * belongs to something else entirely, say so rather than failing on EADDRINUSE
  * with a stack trace nobody outside this repository can read.
  */
-const net = await import('node:net');
-const portFree = await new Promise((resolve) => {
-  const probe = net.createServer();
-  probe.once('error', () => resolve(false));
-  probe.once('listening', () => probe.close(() => resolve(true)));
-  probe.listen(PORT, '127.0.0.1');
-});
-
-if (!portFree) {
-  const isMappify = await fetch(`http://127.0.0.1:${PORT}/api/setup`, {
-    signal: AbortSignal.timeout(1500),
-  })
-    .then((r) => r.ok)
-    .catch(() => false);
-
-  if (isMappify) {
-    console.log(`\n  Mappify is already running at ${url} — opening it.\n`);
-    openBrowser();
-    process.exit(0);
-  }
-
-  console.error(
-    `\n  Something else is using port ${PORT}, and Mappify needs that one:\n` +
-      `  it is written into the redirect URI Spotify has on file, so moving to\n` +
-      `  another port would break signing in.\n\n` +
-      `  Close whatever is on ${PORT} and try again.\n`
-  );
-  process.exit(1);
-}
-
 /**
  * Give the launcher its icon, now that we know where the folder actually is.
  *
@@ -224,9 +194,11 @@ function repairLauncherIcon() {
   let done = false;
   if (process.platform === 'win32') {
     const lnk = path.join(ROOT, 'Mappify.lnk');
-    const ico = path.join(ROOT, 'Mappify.ico');
+    const ico = [path.join(ROOT, 'resources', 'Mappify.ico'), path.join(ROOT, 'Mappify.ico')].find(
+      (p) => fs.existsSync(p)
+    );
     const script = path.join(ROOT, 'tools', 'make-shortcut.ps1');
-    if (fs.existsSync(lnk) && fs.existsSync(ico) && fs.existsSync(script)) {
+    if (ico && fs.existsSync(lnk) && fs.existsSync(script)) {
       // Every field is rewritten, not just the icon: this is the same call the
       // build makes, with the paths as they are now, so a folder that moved has
       // its target repaired here too rather than leaning on the shell to do it.
@@ -248,8 +220,10 @@ function repairLauncherIcon() {
     }
   } else if (process.platform === 'linux') {
     const entry = path.join(ROOT, 'Mappify.desktop');
-    const png = path.join(ROOT, 'Mappify.png');
-    if (fs.existsSync(entry) && fs.existsSync(png)) {
+    const png = [path.join(ROOT, 'resources', 'Mappify.png'), path.join(ROOT, 'Mappify.png')].find(
+      (p) => fs.existsSync(p)
+    );
+    if (png && fs.existsSync(entry)) {
       try {
         const was = fs.readFileSync(entry, 'utf8');
         // Appended under [Desktop Entry] rather than written at a fixed line, so
@@ -276,6 +250,37 @@ function repairLauncherIcon() {
 }
 
 repairLauncherIcon();
+
+const net = await import('node:net');
+const portFree = await new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.once('error', () => resolve(false));
+  probe.once('listening', () => probe.close(() => resolve(true)));
+  probe.listen(PORT, '127.0.0.1');
+});
+
+if (!portFree) {
+  const isMappify = await fetch(`http://127.0.0.1:${PORT}/api/setup`, {
+    signal: AbortSignal.timeout(1500),
+  })
+    .then((r) => r.ok)
+    .catch(() => false);
+
+  if (isMappify) {
+    console.log(`\n  Mappify is already running at ${url} — opening it.\n`);
+    openBrowser();
+    process.exit(0);
+  }
+
+  console.error(
+    `\n  Something else is using port ${PORT}, and Mappify needs that one:\n` +
+      `  it is written into the redirect URI Spotify has on file, so moving to\n` +
+      `  another port would break signing in.\n\n` +
+      `  Close whatever is on ${PORT} and try again.\n`
+  );
+  process.exit(1);
+}
+
 
 const server = spawn(process.execPath, [path.join(ROOT, 'server', 'api.js')], {
   cwd: ROOT,

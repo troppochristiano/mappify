@@ -8,6 +8,12 @@
          same path leaves every existing profile showing the old one for a week,
          however hard anyone reloads. Bump this when the artwork changes. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
+    <!-- The SVG is what a tab draws. These are for everything that wants real
+         pixels and picks the nearest size it can find: the Windows taskbar icon
+         of an app window is built from a favicon, and given only a 16 or a 32 to
+         work with it enlarges one and the result is visibly rough. -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=2" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=2" />
     <!-- iOS ignores both the SVG icon and the manifest when someone adds the
          app to their home screen, and falls back to a screenshot of the page if
          this is missing. -->
