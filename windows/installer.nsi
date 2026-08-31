@@ -59,15 +59,22 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install"
+  ; SW_SHOWMINIMIZED, not the ShowCmd 7 the zip shortcut uses: NSIS has no word
+  ; for "minimised without taking focus". The console still opens minimised; it
+  ; just takes focus for the instant before it does.
+  ;
   ; Sets the working directory recorded in every shortcut created below, which
   ; is what lets the target be started with a relative script path.
   SetOutPath "$INSTDIR"
+  ; The wildcard is * and not *.*, which skips every file without an extension —
+  ; and node_modules is full of them.
+  ;
   ; The zip's own shortcut is not installed: this section writes a better one,
   ; with paths that exist.
-  File /r /x "Mappify.lnk" "${PAYLOAD}\*.*"
+  File /r /x "Mappify.lnk" "${PAYLOAD}\*"
 
-  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} - a globe of your music"
-  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINNOACTIVE "" "${APP} - a globe of your music"
+  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINIMIZED
+  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\runtime\node.exe" "tools\start.js" "$INSTDIR\resources\Mappify.ico" 0 SW_SHOWMINIMIZED
 
   WriteRegStr HKCU "Software\${APP}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${REGKEY}" "DisplayName" "${APP}"
@@ -84,10 +91,16 @@ Section "Uninstall"
   ; The library is deliberately left alone. It lives in %APPDATA%\Mappify, it is
   ; the user's own data, and an uninstaller that silently deletes a music library
   ; someone spent twenty minutes importing is not a tidy uninstaller.
+  ; Out of the directory about to be removed, or it cannot be.
+  SetOutPath "$TEMP"
   Delete "$SMPROGRAMS\${APP}.lnk"
   Delete "$DESKTOP\${APP}.lnk"
-  Delete "$INSTDIR\Uninstall.exe"
   RMDir /r "$INSTDIR"
+  ; The uninstaller and the folder holding it are both locked while this runs.
+  ; /REBOOTOK queues them for the next restart rather than failing quietly and
+  ; leaving an app folder behind after an uninstall.
+  Delete /REBOOTOK "$INSTDIR\Uninstall.exe"
+  RMDir /REBOOTOK "$INSTDIR"
   DeleteRegKey HKCU "${REGKEY}"
   DeleteRegKey HKCU "Software\${APP}"
 SectionEnd
