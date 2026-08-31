@@ -158,6 +158,24 @@ jobs:
             -Description 'Mappify — a globe of your music' `
             -ShowCmd   7
 
+      # The zip stays, for anyone who wants the app without installing it. This
+      # is the download for everyone else — and the only artifact whose icon is
+      # right before it has ever been opened. See windows/installer.nsi.
+      - name: Build the Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $nsis = "$env:ProgramFiles\NSIS;${env:ProgramFiles(x86)}\NSIS"
+          $env:PATH = "$env:PATH;$nsis"
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+            $env:PATH = "$env:PATH;$nsis"
+          }
+          $version = node -p "require('./package.json').version"
+          $out = "mappify-setup-${{ matrix.name }}.exe"
+          makensis "/DVERSION=$version" "/DPAYLOAD=out\Mappify" "/DICON=web\public\favicon.ico" "/DOUTFILE=$out" windows/installer.nsi
+          if (-not (Test-Path $out)) { throw "makensis produced no installer" }
+
       - name: Package
         shell: bash
         run: |
@@ -175,13 +193,18 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mappify-${{ matrix.name }}
-          path: mappify-${{ matrix.name }}.zip
+          path: |
+            mappify-${{ matrix.name }}.zip
+            mappify-setup-${{ matrix.name }}.exe
+          if-no-files-found: warn
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: mappify-${{ matrix.name }}.zip
+          files: |
+            mappify-${{ matrix.name }}.zip
+            mappify-setup-${{ matrix.name }}.exe
           body: |
             Download the file for your computer, unzip it, and open **Mappify**.
 

@@ -11,8 +11,19 @@ It runs on your own computer. Nothing to host, nothing to pay for, and your
 library never leaves the machine.
 
 **Download** the file for your computer from
-[Releases](https://github.com/troppochristiano/mappify/releases), unzip it, and
-open **Mappify**. Nothing to install — the runtime is inside.
+[Releases](https://github.com/troppochristiano/mappify/releases).
+
+On **Windows**, `mappify-setup-windows-x64.exe` installs to your own user folder
+— no administrator, and it puts Mappify in the Start menu and on the desktop with
+its icon. The `.zip` beside it is the same app without installing: unzip it
+anywhere and open **Mappify**. Its shortcut looks blank until you open it once,
+because a shortcut records where its icon was when it was built and that path
+belongs to the machine that built it; opening Mappify rewrites it.
+
+On **macOS** the download is a single **Mappify.app** you can drag to
+Applications. On **Linux** it is a folder with a launcher in it.
+
+Either way there is nothing else to install — the runtime is inside.
 
 > The download is not code-signed, so the first launch needs one click past a
 > warning. **Windows**: SmartScreen says "unidentified developer" — *More info* →
@@ -20,10 +31,6 @@ open **Mappify**. Nothing to install — the runtime is inside.
 > Sequoia or later, where that no longer offers a way through, open it once and
 > then allow it in *System Settings → Privacy & Security*. Once each, not every
 > time.
-
-On **macOS** the download is a single **Mappify.app**, which you can drag to
-Applications like anything else. On **Windows** and **Linux** it is a folder with
-a launcher in it — keep the folder together and put a shortcut wherever you like.
 
 It opens in **its own window** — no tabs, no address bar, its own taskbar icon.
 That is a Chromium app window (`--app=`), using the browser you already have and

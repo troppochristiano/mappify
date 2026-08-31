@@ -199,6 +199,18 @@ function repairLauncherIcon() {
     );
     const script = path.join(ROOT, 'tools', 'make-shortcut.ps1');
     if (ico && fs.existsSync(lnk) && fs.existsSync(script)) {
+      // Deleted first, then written fresh. Overwriting the file in place leaves
+      // the shell's icon cache entry for that path untouched — it keeps drawing
+      // whatever it drew before, blank included, however correct the link now
+      // is. Deleting the file drops the entry with it. This is the difference
+      // between a repair that works and one that only looks right to a tool
+      // reading the link back.
+      try {
+        fs.rmSync(lnk);
+      } catch {
+        /* still worth attempting the write */
+      }
+
       // Every field is rewritten, not just the icon: this is the same call the
       // build makes, with the paths as they are now, so a folder that moved has
       // its target repaired here too rather than leaning on the shell to do it.
