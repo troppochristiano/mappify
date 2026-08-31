@@ -516,6 +516,34 @@ export function Home() {
   const job = useImportStatus().data
   // Nothing drawn yet — either the library is empty or nothing has resolved.
   const noPoints = (map.data?.points.length ?? 0) === 0
+
+  /**
+   * Where the import card has been dragged to, as an offset from centre.
+   *
+   * An offset rather than a position, so the card stays centred if the window is
+   * resized and only moves by however far it was pushed. Kept for the session
+   * only: it exists to get the card off whatever it is covering right now, and a
+   * position remembered from last week would put it somewhere with no reason.
+   */
+  const [importNudge, setImportNudge] = useState({ x: 0, y: 0 })
+  const dragImport = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Left button only, and never from a drag that began on the progress bar.
+    if (e.button !== 0) return
+    const startX = e.clientX
+    const startY = e.clientY
+    const from = importNudge
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) =>
+      setImportNudge({ x: from.x + ev.clientX - startX, y: from.y + ev.clientY - startY })
+    const up = () => {
+      el.releasePointerCapture(e.pointerId)
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+  }
   useEffect(() => {
     if (loading) return
     const id = setTimeout(() => setLoaderGone(true), LOADER_FADE)
@@ -1291,7 +1319,17 @@ export function Home() {
           import — and hiding the only sign of life for ten minutes over an
           empty globe is how a working app comes to look broken. That happened. */}
       {job?.running && loaderGone && (job.phase !== 'origins-live' || noPoints) && (
-        <div className="import-loading" role="status" aria-live="polite">
+        <div
+          className="import-loading"
+          role="status"
+          aria-live="polite"
+          onPointerDown={dragImport}
+          style={
+            importNudge.x || importNudge.y
+              ? { transform: `translate(calc(-50% + ${importNudge.x}px), calc(-50% + ${importNudge.y}px))`, animation: 'none' }
+              : undefined
+          }
+        >
           <span className="spinner" aria-hidden="true" />
           <div className="import-loading-text">
             <b>Importing your library…</b>

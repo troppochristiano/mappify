@@ -210,17 +210,26 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 .import-loading {
   position: absolute; z-index: 6;
   top: 50%;
-  left: calc(50% + (var(--dock-w) + var(--dock-edge)) / 2);
+  /* The middle of the window, not of the map the dock leaves. .globe-tuned
+     offsets itself past the dock because it sits along the bottom, where the
+     dock actually is; this is vertically centred, where nothing is in its way,
+     and the same offset only made it look off-centre. */
+  left: 50%;
   transform: translate(-50%, -50%);
-  width: min(340px, calc(100% - var(--dock-w) - 48px));
+  width: min(340px, calc(100% - 32px));
   display: flex; align-items: flex-start; gap: 11px;
   padding: 12px 14px;
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: 0 8px 24px rgb(0 0 0 / .45);
   font-size: 12px; color: var(--muted); text-align: left;
-  pointer-events: none;
+  /* Draggable, so it can be moved off whatever it happens to be covering. It is
+     the one thing on the map that appears uninvited and stays for minutes. */
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
   animation: import-in .32s ease both;
 }
+.import-loading:active { cursor: grabbing; }
 .import-loading b { display: block; color: var(--fg); font-size: 13px; margin-bottom: 3px; }
 .import-loading .spinner { width: 16px; height: 16px; margin-top: 2px; flex: none; }
 .import-loading .import-loading-text { min-width: 0; flex: 1; }

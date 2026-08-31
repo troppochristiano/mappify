@@ -119,12 +119,32 @@ function findAppBrowser() {
           `${process.env.ProgramFiles}\\Microsoft\\Edge\\Application\\msedge.exe`,
         ]
       : process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-            '/Applications/Chromium.app/Contents/MacOS/Chromium',
-          ]
-        : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge'];
+        ? // Both roots: an app installed for one user lives in ~/Applications and
+          // not /Applications, and looking only in the second is why a Mac with
+          // Chrome in it still opened an ordinary Safari tab.
+          //
+          // Safari is absent on purpose rather than forgotten: it has no
+          // equivalent of --app, so there is no window it could open that is not
+          // a browser. A Mac with nothing but Safari falls through to the tab
+          // below, which still works and is still the app.
+          ['/Applications', `${process.env.HOME}/Applications`].flatMap((root) =>
+            [
+              ['Google Chrome', 'Google Chrome'],
+              ['Chromium', 'Chromium'],
+              ['Brave Browser', 'Brave Browser'],
+              ['Microsoft Edge', 'Microsoft Edge'],
+              ['Vivaldi', 'Vivaldi'],
+            ].map(([app, bin]) => `${root}/${app}.app/Contents/MacOS/${bin}`)
+          )
+        : [
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/brave-browser',
+            '/usr/bin/vivaldi',
+            '/usr/bin/microsoft-edge',
+            '/snap/bin/chromium',
+          ];
 
   return candidates.find((p) => p && fs.existsSync(p)) ?? null;
 }
