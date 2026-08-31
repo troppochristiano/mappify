@@ -89,8 +89,19 @@ jobs:
             gzip -d index.db.gz
             printf 'index: %s MB\n' "$(du -m index.db | cut -f1)"
           else
-            echo "::warning::No 'index' release asset found — this build will resolve"
-            echo "::warning::origins against MusicBrainz at 1 req/s instead of instantly."
+            echo "::error::No 'index' release asset found."
+            echo "::error::"
+            echo "::error::This used to be a warning, and the build that came of it placed"
+            echo "::error::nothing on anybody's map: with no index every artist falls to"
+            echo "::error::MusicBrainz at one request per second, which for a normal library"
+            echo "::error::is ten minutes of an empty globe. Nobody waits that long, so the"
+            echo "::error::app simply looks broken."
+            echo "::error::"
+            echo "::error::Publish one before tagging:"
+            echo "::error::  node tools/build-bundle-index.js"
+            echo "::error::  gzip -9 -k data/index.db"
+            echo "::error::  gh release upload index data/index.db.gz --clobber"
+            exit 1
           fi
 
       - name: Assemble
@@ -140,6 +151,15 @@ jobs:
       # "run anyway" offered. There is nothing to appeal in a build with no binary
       # of ours in it: node.exe is signed by the OpenJS Foundation, and a shortcut
       # is inert.
+      #
+      # The installer built further down is a binary of ours again, and gives that
+      # property up knowingly — it is the only way a download can carry an icon
+      # before it has been opened. The zip stays beside it for exactly this
+      # reason: if the installer is ever flagged, the release is still usable and
+      # nothing has to be pulled. An NSIS stub is at least one of the most common
+      # executables in existence rather than a bespoke one nobody has seen, which
+      # is what the ML model objected to last time. Signing is the actual fix, and
+      # is not free.
       #
       # The cost is a console window, minimised (ShowCmd 7) rather than absent.
       # Closing it stops the server, which is what the job object used to do.
@@ -245,12 +265,20 @@ jobs:
 
             ### macOS
 
-            Right-click **Mappify.command** → **Open**, then **Open** again. Once,
-            not every time.
+            The download is **Mappify.app** — drag it to Applications if you like.
+
+            The first launch is refused: macOS says it cannot verify the app is
+            free of malware, and offers only **Move to Trash** and **Done**. It is
+            not a dead end. Click **Done**, open **System Settings → Privacy &
+            Security**, scroll to **Security**, and click **Open Anyway** next to
+            Mappify. Once, not every time.
+
+            (Older macOS let you right-click the app and choose **Open** instead.
+            Sequoia removed that, which is why the dialog now looks final.)
 
             macOS does not trust this because the download is not code-signed — a
-            certificate costs a few hundred a year, and this is a personal
-            project.
+            certificate costs a hundred a year plus notarisation, and this is a
+            personal project.
 
             ### Linux
 

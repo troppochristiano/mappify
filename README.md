@@ -26,11 +26,19 @@ Applications. On **Linux** it is a folder with a launcher in it.
 Either way there is nothing else to install — the runtime is inside.
 
 > The download is not code-signed, so the first launch needs one click past a
-> warning. **Windows**: SmartScreen says "unidentified developer" — *More info* →
-> *Run anyway*. **macOS**: right-click **Mappify** → *Open*, then *Open* — and on
-> Sequoia or later, where that no longer offers a way through, open it once and
-> then allow it in *System Settings → Privacy & Security*. Once each, not every
-> time.
+> warning. Once each, not every time.
+>
+> **Windows**: SmartScreen says "unidentified developer" — *More info* → *Run
+> anyway*.
+>
+> **macOS**: you will be told Apple cannot verify it is free of malware, offering
+> only *Move to Trash* and *Done*. Click **Done** — not Move to Trash — then open
+> *System Settings → Privacy & Security*, scroll to *Security*, and click **Open
+> Anyway** next to Mappify. Older macOS instead lets you right-click the app and
+> choose *Open*; Sequoia removed that route, which is why the first dialog looks
+> like a dead end and is not one. From a terminal, `xattr -dr
+> com.apple.quarantine /Applications/Mappify.app` does the same thing in one
+> step.
 
 It opens in **its own window** — no tabs, no address bar, its own taskbar icon.
 That is a Chromium app window (`--app=`), using the browser you already have and

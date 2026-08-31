@@ -514,6 +514,8 @@ export function Home() {
   // The import that may be running behind the map. react-query dedupes on the
   // shared key, so watching it here costs no extra polling.
   const job = useImportStatus().data
+  // Nothing drawn yet — either the library is empty or nothing has resolved.
+  const noPoints = (map.data?.points.length ?? 0) === 0
   useEffect(() => {
     if (loading) return
     const id = setTimeout(() => setLoaderGone(true), LOADER_FADE)
@@ -1282,8 +1284,13 @@ export function Home() {
           up whatever the bundled index could not match, at the one request a
           second MusicBrainz asks for, and on a large library that is an hour of
           a spinner sitting over a map that is already drawn and already worth
-          looking at. The work carries on; the options tab still reports it. */}
-      {job?.running && loaderGone && job.phase !== 'origins-live' && (
+          looking at. The work carries on; the options tab still reports it.
+
+          Unless there is nothing on the map yet. A download whose index failed
+          to ship resolves *every* artist that way, so the tail is the whole
+          import — and hiding the only sign of life for ten minutes over an
+          empty globe is how a working app comes to look broken. That happened. */}
+      {job?.running && loaderGone && (job.phase !== 'origins-live' || noPoints) && (
         <div className="import-loading" role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" />
           <div className="import-loading-text">
