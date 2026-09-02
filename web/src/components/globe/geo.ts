@@ -161,6 +161,137 @@ export function dotsToGeoJSON(
   }
 }
 
+/** One imported library, as the overlay needs it. */
+export type FriendLib = { id: number; colour: string; points: MapPoint[] }
+
+export type FriendProps = {
+  /**
+   * The feature id, namespaced `${libId}:${qid}`.
+   *
+   * Namespaced because one source now holds every library, and several of them
+   * hold the same qid for the same city — that is the point of an overlay. A
+   * feature-state keyed on qid alone would light three libraries' marks as one.
+   * This is also what makes `promoteId` safe here at last.
+   */
+  fid: string
+  qid: string
+  name: string
+  tracks: number
+  /** Their track count on the shared 0..1 area scale — see DotProps.size. */
+  size: number
+  /**
+   * What this ring stacks outside, on the same scale.
+   *
+   * Your dot where you have the place, and the first library's dot where you do
+   * not — so one radius expression serves both without being told which case it
+   * is in. Zero on a filled dot, which has nothing to stack outside.
+   */
+  base: number
+  /** Ring index, outward from the dot at the centre. -1 on a filled dot. */
+  ring: number
+  /** A place drawn as a dot, or a ring around somebody else's. */
+  kind: 'solo' | 'ring'
+  colour: string
+  /** The hover tint. Precomputed: the expression language has no lighten. */
+  hot: string
+  dim: boolean
+}
+
+/** A little brighter, for hover. Hex in, hex out; anything else passes through. */
+function lighten(colour: string, by = 0.22): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(colour)
+  if (!m) return colour
+  const n = parseInt(m[1], 16)
+  const mix = (c: number) => Math.round(c + (255 - c) * by)
+  return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    .map((c) => mix(c).toString(16).padStart(2, '0'))
+    .join('')}`
+}
+
+/**
+ * Every visible imported library, as one collection.
+ *
+ * One source rather than one per library, because circle paint is data-driven:
+ * `['get','colour']` serves all of them from a single layer. That is not only
+ * cheaper — it is the only way the *labels* can be fair. Label priority between
+ * two symbol layers is decided by which layer is on top, so a layer per library
+ * would give the first one permanent precedence over the second regardless of
+ * how much music is there. In one layer, `symbol-sort-key` arbitrates honestly.
+ *
+ * Three cases, and each place lands in exactly one of them:
+ *
+ *   you have it        one ring per library, stacked outward around your dot
+ *   one library only   a filled dot, sized exactly like one of yours
+ *   several, not you   the first library's filled dot, the rest as rings
+ *
+ * The partition is structural rather than checked: a ring always has a `base`
+ * to sit outside, a dot never does, and the two are told apart by `kind`.
+ */
+export function friendsToGeoJSON(
+  /** Your own places, to know which cities are shared. Keyed by qid. */
+  mine: ReadonlyMap<string, MapPoint>,
+  libs: FriendLib[],
+  /** Null means no filter: everything is lit. */
+  lit: Set<string> | null,
+  /** Null means no spotlight. */
+  spot: Set<string> | null,
+  /** The count that counts as full size, across your library and all of theirs. */
+  scaleMax?: number
+): FC<Point, FriendProps> {
+  const max = Math.max(
+    1,
+    scaleMax ??
+      libs.reduce((m, l) => l.points.reduce((n, p) => (p.tracks > n ? p.tracks : n), m), 1)
+  )
+  const area = (tracks: number) => Math.sqrt(tracks / max)
+
+  // Grouped by place, in the order the libraries were given, so which one gets
+  // the dot at a place none of yours covers is stable rather than incidental.
+  const at = new Map<string, { lib: FriendLib; point: MapPoint }[]>()
+  for (const lib of libs) {
+    for (const point of lib.points) {
+      const list = at.get(point.qid)
+      if (list) list.push({ lib, point })
+      else at.set(point.qid, [{ lib, point }])
+    }
+  }
+
+  const features: FC<Point, FriendProps>['features'] = []
+  for (const [qid, here] of at) {
+    const yours = mine.get(qid)
+    const dim = (lit != null && !lit.has(qid)) || (spot != null && !spot.has(qid))
+    // Where you have the place, every library is a ring around your dot. Where
+    // you do not, the first draws the dot and the others ring it.
+    const dotIndex = yours ? -1 : 0
+    const base = yours ? area(yours.tracks) : area(here[0].point.tracks)
+
+    here.forEach(({ lib, point }, i) => {
+      const isDot = i === dotIndex
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [point.lon, point.lat] },
+        properties: {
+          fid: `${lib.id}:${qid}`,
+          qid,
+          name: point.name,
+          tracks: point.tracks,
+          size: area(point.tracks),
+          base: isDot ? 0 : base,
+          // Rings count outward from whatever is at the centre, so the first
+          // ring is 0 when it surrounds your dot and 1 when it surrounds
+          // another library's.
+          ring: isDot ? -1 : yours ? i : i - 1,
+          kind: isDot ? 'solo' : 'ring',
+          colour: lib.colour,
+          hot: lighten(lib.colour),
+          dim,
+        },
+      })
+    })
+  }
+  return { type: 'FeatureCollection', features }
+}
+
 const RAD = Math.PI / 180
 
 /**

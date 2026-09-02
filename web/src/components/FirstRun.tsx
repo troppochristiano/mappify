@@ -56,6 +56,21 @@ export function FirstRun({ redirectUri }: { redirectUri: string }) {
         <li>Tick <b>Web API</b>, save, then copy the <b>Client ID</b> it gives you.</li>
       </ol>
 
+      {/* The same three steps with a picture of each screen, for anyone who
+          would rather see the dashboard than be described it. Deliberately not
+          inlined here: this screen is read once and then never again, and a
+          walkthrough long enough to be useful would bury the input box that is
+          the actual work. */}
+      <p className="fine">
+        <a
+          href="https://github.com/troppochristiano/mappify/blob/main/docs/getting-started.md#telling-spotify-about-your-copy"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Screenshots of each step →
+        </a>
+      </p>
+
       <input
         className="clientid"
         value={clientId}

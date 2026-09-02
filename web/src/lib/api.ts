@@ -47,10 +47,12 @@ export type PlaylistHit = {
 }
 
 /**
- * Which library a search covers.
+ * Which libraries a search covers.
  *
- * 'theirs' and 'both' need a friend id; without one the server answers 'mine'
- * rather than erroring, so a link that outlives a removed friend still works.
+ * 'theirs' means every imported library currently on the globe, not one of them
+ * — there can be several, and a control naming one while the map shows three
+ * would be lying. Without any, the server answers 'mine' rather than erroring,
+ * so a link that outlives a removed library still works.
  */
 export type SearchScope = 'mine' | 'theirs' | 'both'
 
@@ -64,17 +66,21 @@ export type SearchScope = 'mine' | 'theirs' | 'both'
 export type Owner = 'mine' | 'theirs'
 
 export type SearchResults = {
-  artists: (ArtistHit & { owner: Owner })[]
-  places: (PlaceResult & { owner: Owner })[]
-  playlists: PlaylistHit[]
+  /** `friend_id` says *which* imported library, since 'theirs' can be several. */
+  artists: (ArtistHit & { owner: Owner; friend_id?: number })[]
+  places: (PlaceResult & { owner: Owner; friend_id?: number })[]
+  /** Theirs since format 2 of a share file. `id` is local to that file. */
+  playlists: (PlaylistHit & { owner?: Owner; friend_id?: number })[]
   scope: SearchScope
-  friend: number | null
+  friends: number[]
   /**
-   * Kinds of result that cannot exist in this scope, with the reason.
+   * Kinds of result that cannot be here, with the reason — never merely absent.
    *
-   * Distinct from "found nothing": a shared library carries no playlists at all,
-   * and an empty list saying so is the difference between a control that means
-   * two things in two scopes and one that admits which it means.
+   * Distinct from "found nothing": an imported library from before playlists
+   * travelled has none to search, and one that shared none has none either.
+   * Saying which is the difference between a control that means two things in
+   * two scopes and one that admits which it means. Silent once there are
+   * playlists to match, when an empty list really is an empty search.
    */
   unavailable?: { playlists?: string }
 }
@@ -241,9 +247,17 @@ export type SourceRow = {
 }
 
 export type PlaylistPreview = {
+  /** Yours plus every ticked library, counted as a set — a track you both have is one track. */
   total: number
-  sample: { track: string; artist: string; city: string | null }[]
+  /** Of that, how many are your own. Zero at a place only an imported library has. */
+  mine: number
+  /** `who` names the library a track came from, and is null for your own. */
+  sample: { track: string; artist: string; city: string | null; who: string | null }[]
   places: string[]
+  /** The libraries `total` is of, echoed so a stale count is recognisable as one. */
+  included: number[]
+  /** Every imported library with something here, ticked or not. */
+  shared: { id: number; name: string; tracks: number; missing: number }[]
 }
 
 export type Stats = {
@@ -369,14 +383,15 @@ export const api = {
    * current filter is how a filter becomes a cage. An empty query answers with
    * the library instead of with nothing.
    */
-  search: (q: string, scope: SearchScope = 'mine', friend?: number | null) => {
+  search: (q: string, scope: SearchScope = 'mine', friends: number[] = []) => {
     const sp = new URLSearchParams({ q })
     // Omitted entirely in the default scope, so the common request is the same
     // URL it has always been and the cache key does not change under existing
-    // callers.
-    if (scope !== 'mine' && friend != null) {
+    // callers. One repeated parameter per library, which the server also accepts
+    // as a single id for the sake of older links.
+    if (scope !== 'mine' && friends.length) {
       sp.set('scope', scope)
-      sp.set('friend', String(friend))
+      for (const id of friends) sp.append('friend', String(id))
     }
     return get<SearchResults>(`/api/search?${sp}`)
   },
@@ -405,12 +420,15 @@ export const api = {
   startImport: () => get<ImportStatus>('/api/import'),
   cancelImport: () => get<{ cancelling: boolean }>('/api/import/cancel'),
   sources: () => get<{ sources: SourceRow[] }>('/api/sources'),
-  playlistPreview: (scope: { placeQid?: string; iso?: string }) => {
+  playlistPreview: (scope: { placeQid?: string; iso?: string; friends?: number[] }) => {
     const sp = new URLSearchParams()
     if (scope.placeQid) sp.set("placeQid", scope.placeQid)
     if (scope.iso) sp.set("iso", scope.iso)
+    // Repeated rather than comma-joined, which is how every other route here
+    // names more than one library.
+    for (const id of scope.friends ?? []) sp.append('friend', String(id))
     return get<PlaylistPreview>(`/api/playlist-preview?${sp}`)
   },
-  playlistCreate: (body: { placeQid?: string; iso?: string; name: string }) =>
+  playlistCreate: (body: { placeQid?: string; iso?: string; name: string; friends?: number[] }) =>
     post<{ id: string; name: string; url: string | null; added: number }>('/api/playlist-create', body),
 }

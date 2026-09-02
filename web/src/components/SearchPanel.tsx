@@ -38,10 +38,11 @@ import { chipTarget, labelsQuery } from '../lib/filters'
  * by looking instead of typing.
  */
 
+/** `friendId` says which imported library a row is from — several are searched. */
 type Row =
-  | { kind: 'artist'; id: string; label: string; sub: string; owner: Owner; hit: ArtistHit }
-  | { kind: 'place'; id: string; label: string; sub: string; owner: Owner; hit: PlaceResult }
-  | { kind: 'playlist'; id: string; label: string; sub: string; owner: Owner; hit: PlaylistHit }
+  | { kind: 'artist'; id: string; label: string; sub: string; owner: Owner; friendId?: number; hit: ArtistHit }
+  | { kind: 'place'; id: string; label: string; sub: string; owner: Owner; friendId?: number; hit: PlaceResult }
+  | { kind: 'playlist'; id: string; label: string; sub: string; owner: Owner; friendId?: number; hit: PlaylistHit }
 
 type Mode = 'search' | 'artists' | 'library'
 
@@ -65,16 +66,24 @@ type Props = {
   /** Open an artist in the panel on the right. */
   onOpenArtist: (id: string) => void
   /**
-   * The imported library to search alongside yours, if one is open.
+   * Open one of their playlists in the panel on the right.
    *
-   * Null means the scope control is not offered at all rather than offered and
+   * Two ids, because one is not an address: a source id is the number *their*
+   * file used, and yours has a playlist 4 as surely as theirs does.
+   */
+  onOpenFriendPlaylist: (friendId: number, sourceId: number, name: string) => void
+  /**
+   * The imported libraries to search alongside yours — every one on the globe.
+   *
+   * Empty means the scope control is not offered at all rather than offered and
    * disabled: there is nothing to compare against, so a three-way choice with
    * two dead options would be furniture.
    */
-  friendId: number | null
-  friendName: string | null
-  /** The hue their rings already have on the globe, reused to mark their rows. */
-  friendColour: string
+  friendIds: number[]
+  /** Each library's hue, so a row is marked in the colour it wears on the map. */
+  friendColourOf: (id: number) => string
+  /** Each library's name, for the tooltip on that mark. */
+  friendNameOf: (id: number) => string | null
   scope: SearchScope
   onScope: (next: SearchScope) => void
 }
@@ -91,9 +100,10 @@ export function SearchPanel({
   onClear,
   onSelectPlace,
   onOpenArtist,
-  friendId,
-  friendName,
-  friendColour,
+  onOpenFriendPlaylist,
+  friendIds,
+  friendColourOf,
+  friendNameOf,
   scope,
   onScope,
 }: Props) {
@@ -132,10 +142,10 @@ export function SearchPanel({
   // while its scope is selected would otherwise keep asking for a library that
   // is not there. The server answers 'mine' for an unknown friend either way;
   // this keeps the control and the answer agreeing.
-  const effectiveScope: SearchScope = friendId == null ? 'mine' : scope
+  const effectiveScope: SearchScope = friendIds.length ? scope : 'mine'
   const results = useQuery({
-    queryKey: ['search', q, effectiveScope, friendId],
-    queryFn: () => api.search(q, effectiveScope, friendId),
+    queryKey: ['search', q, effectiveScope, friendIds.join(',')],
+    queryFn: () => api.search(q, effectiveScope, friendIds),
     // Without this the list empties between keystrokes and the rows jump.
     placeholderData: keepPreviousData,
   })
@@ -165,17 +175,21 @@ export function SearchPanel({
           label: a.name,
           sub: a.city ?? 'origin unknown',
           owner: a.owner ?? 'mine',
+          friendId: a.friend_id,
           hit: a,
         })
       ),
-      // Always yours: a shared library carries no playlists. See `unavailable`.
+      // Yours, and — since format 2 of a share file — theirs. The owner comes
+      // off the row rather than being assumed: it decides whether this is a chip
+      // for your globe or a list of somebody else's tracks to open.
       ...d.playlists.map(
         (s): Row => ({
           kind: 'playlist',
           id: String(s.id),
           label: s.name,
           sub: plural(s.imported, 'track'),
-          owner: 'mine' as Owner,
+          owner: s.owner ?? 'mine',
+          friendId: s.friend_id,
           hit: s,
         })
       ),
@@ -222,12 +236,21 @@ export function SearchPanel({
   const artOf = (row: Row) => (row.kind === 'place' ? null : row.hit.image_url)
 
   const canChip = (row: Row) => row.owner === 'mine'
+  // Their playlist is the one row of theirs with something behind it: a list of
+  // tracks that play, where their artist has no page and their place is a
+  // coordinate. Note the asymmetry it creates — your playlist opens nothing and
+  // becomes a chip, theirs opens and cannot be chipped — which is not an
+  // inconsistency but the same rule twice: a row does what it can mean.
   const canOpen = (row: Row) =>
-    row.kind === 'place' || (row.kind === 'artist' && row.owner === 'mine')
+    row.kind === 'place' ||
+    (row.kind === 'artist' && row.owner === 'mine') ||
+    (row.kind === 'playlist' && row.owner === 'theirs')
 
   const go = (row: Row) => {
     if (row.kind === 'place') onSelectPlace(row.id, row.label, row.owner)
     else if (row.kind === 'artist' && row.owner === 'mine') onOpenArtist(row.id)
+    else if (row.kind === 'playlist' && row.owner === 'theirs' && row.friendId != null)
+      onOpenFriendPlaylist(row.friendId, Number(row.id), row.label)
     else if (row.kind === 'playlist') onAdd(chipFor(row, 'include'))
   }
 
@@ -281,10 +304,11 @@ export function SearchPanel({
             const theirs = row.owner === 'theirs'
             return (
               <li
-                // Keyed by owner as well as target: a city you both have is two
-                // rows carrying the same chip target, and React would otherwise
-                // see one key twice.
-                key={`${row.owner}:${target}`}
+                // Keyed by owner *and* library as well as target: a city you
+                // both have is two rows carrying the same chip target, and their
+                // playlist ids are numbers local to their own file — two friends
+                // both have a playlist 4, and so do you.
+                key={`${row.owner}:${row.friendId ?? ''}:${target}`}
                 id={`search-row-${i}`}
                 data-row={i}
                 role="option"
@@ -305,10 +329,16 @@ export function SearchPanel({
                     {theirs && (
                       <span
                         className="owner-dot"
-                        style={{ color: friendColour }}
-                        // The same ring, and the same colour, this place already
-                        // wears on the globe — so the mark needs no legend.
-                        title={friendName ? `From ${friendName}'s library` : "From your friend's library"}
+                        // Its own library's colour, not a single overlay hue:
+                        // with several searched at once the mark is the only
+                        // thing saying which one a row came from. The same
+                        // colour it wears on the globe, so it needs no legend.
+                        style={{ color: row.friendId != null ? friendColourOf(row.friendId) : undefined }}
+                        title={
+                          row.friendId != null && friendNameOf(row.friendId)
+                            ? `From ${friendNameOf(row.friendId)}'s library`
+                            : 'From an imported library'
+                        }
                         aria-hidden="true"
                       />
                     )}
@@ -361,12 +391,14 @@ export function SearchPanel({
       {/* Offered only when there is a second library to search. With none
           imported this is not a disabled control, it is no control — two of the
           three options would be permanently dead and the row would be furniture. */}
-      {mode === 'search' && friendId != null && (
+      {mode === 'search' && friendIds.length > 0 && (
         <div className="seg scope-modes" role="group" aria-label="Which library to search">
           {(
             [
               ['mine', 'Mine'],
-              ['theirs', friendName ?? 'Theirs'],
+              // Not a name any more: 'theirs' is every library on the globe, and
+              // one of their names on a button covering three would be wrong.
+              ['theirs', 'Imported'],
               ['both', 'Both'],
             ] as [SearchScope, string][]
           ).map(([s, label]) => (
@@ -374,7 +406,11 @@ export function SearchPanel({
               key={s}
               aria-pressed={effectiveScope === s}
               onClick={() => onScope(s)}
-              style={s !== 'mine' && effectiveScope === s ? { background: friendColour } : undefined}
+              style={
+                s !== 'mine' && effectiveScope === s
+                  ? { background: friendColourOf(friendIds[0]) }
+                  : undefined
+              }
             >
               {label}
             </button>
@@ -438,7 +474,10 @@ export function SearchPanel({
           <>
             {group('place', 'Places')}
             {group('artist', 'Artists')}
-            {group('playlist', q ? 'Playlists' : 'Your library')}
+            {/* "Your library" is the resting state's name for your own
+                playlists. Under a scope that is not yours it is not your
+                library, so it does not say so. */}
+            {group('playlist', q || effectiveScope === 'theirs' ? 'Playlists' : 'Your library')}
 
             {/* Absent by design, not merely unmatched — and the difference is
                 exactly what would otherwise make one control mean two things.
@@ -451,7 +490,9 @@ export function SearchPanel({
             {q && !rows.length && !results.isFetching && (
               <p className="empty">
                 {effectiveScope === 'theirs'
-                  ? `Nothing in ${friendName ?? 'their'} library matches that.`
+                  ? friendIds.length === 1
+                    ? `Nothing in ${friendNameOf(friendIds[0]) ?? 'their'} library matches that.`
+                    : 'Nothing in the imported libraries matches that.'
                   : effectiveScope === 'both'
                     ? 'Nothing in either library matches that.'
                     : 'Nothing in your library matches that.'}

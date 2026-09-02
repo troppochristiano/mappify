@@ -47,6 +47,7 @@ import {
   myLibrary,
   deleteFriend,
   BadShareFile,
+  PLAYLIST_FORMAT,
 } from './share.js';
 import { compareLibraries } from './compare.js';
 import { runImport, status as importStatus, cancel as cancelImport, anyRunning } from './jobs.js';
@@ -100,6 +101,62 @@ function placeTracks({ qid, iso }) {
      ORDER BY a.name COLLATE NOCASE, t.name COLLATE NOCASE`,
     qid ?? iso
   );
+}
+
+/**
+ * The same question, asked of one imported library.
+ *
+ * Their artists carry a place and nothing above it — a shared file has no
+ * containment tree — so the subtree has to be walked in *your* places and their
+ * flat qids matched against the result. Selecting New York City therefore picks
+ * up their Brooklyn artists as long as your own tree knows Brooklyn is in it,
+ * which it does for every place either library has ever resolved.
+ *
+ * A place only they have still works, because the walk starts at the selected
+ * qid whether or not you have a row for it: at worst it matches just itself,
+ * which is exactly the case that used to offer an empty playlist.
+ *
+ * `mine` rides along so a preview can say how much of this is new to you, in the
+ * same words the place panel already uses for their artists.
+ */
+function friendPlaceTracks({ friendId, qid, iso }) {
+  const where = qid
+    ? `COALESCE((SELECT m.merged_into FROM places m WHERE m.qid = fa.place_qid), fa.place_qid) IN (
+         WITH RECURSIVE sub(qid) AS (
+           SELECT ?
+           UNION
+           SELECT c.qid FROM places c JOIN sub
+             ON COALESCE((SELECT m2.merged_into FROM places m2 WHERE m2.qid = c.parent_qid), c.parent_qid) = sub.qid
+            WHERE c.merged_into IS NULL AND c.qid <> sub.qid
+         ) SELECT qid FROM sub
+       )`
+    : 'fp.country_iso = ?';
+  return all(
+    `SELECT DISTINCT ft.spotify_id, ft.name, fa.name artist, fp.name city,
+            EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = ft.spotify_id) mine
+       FROM friend_tracks ft
+       JOIN friend_artists fa
+         ON fa.friend_id = ft.friend_id AND fa.spotify_id = ft.artist_id
+       LEFT JOIN friend_places fp
+         ON fp.friend_id = fa.friend_id AND fp.qid = fa.place_qid
+      WHERE ft.friend_id = ? AND ${where}
+      ORDER BY fa.name COLLATE NOCASE, ft.name COLLATE NOCASE`,
+    friendId,
+    qid ?? iso
+  );
+}
+
+/**
+ * Every imported library that has anything at a place, with what it holds.
+ *
+ * Read by both playlist routes: the preview lists them as options and the
+ * create route builds from the ones that were ticked, so what you were offered
+ * and what you get are the same query.
+ */
+function sharedAtPlace({ qid, iso }) {
+  return listFriends()
+    .map((f) => ({ friend: f, rows: friendPlaceTracks({ friendId: f.id, qid, iso }) }))
+    .filter((s) => s.rows.length);
 }
 
 /**
@@ -682,22 +739,84 @@ const routes = {
     const qid = url.searchParams.get('placeQid');
     const iso = url.searchParams.get('iso');
     if (!qid && !iso) return { error: 'placeQid or iso required' };
-    const rows = placeTracks({ qid, iso });
+    const mine = placeTracks({ qid, iso });
+    const shared = sharedAtPlace({ qid, iso });
+    // Which of them are ticked right now. The union is counted here rather than
+    // in the browser because only this side holds the track ids to union *by* —
+    // sending them all so the panel could count them itself would be the whole
+    // playlist over the wire on every checkbox.
+    const chosen = new Set(friendIds(url));
+    const picked = shared.filter((s) => chosen.has(s.friend.id));
+    const ids = new Set(mine.map((r) => r.spotify_id));
+    // Yours first, then each library in turn, so a track you both have is
+    // counted once and attributed to you.
+    const extra = [];
+    for (const s of picked)
+      for (const r of s.rows)
+        if (!ids.has(r.spotify_id)) {
+          ids.add(r.spotify_id);
+          extra.push({ ...r, who: s.friend.display_name });
+        }
+    const rows = [...mine, ...extra];
+    // A few of theirs kept in the sample rather than yours filling it.
+    // Straight `slice` off the front meant that at a place you have 200 tracks
+    // from, ticking a library changed a number and nothing else on screen —
+    // the twelve rows shown were all still your own.
+    const fromMine = mine.slice(0, Math.max(12 - extra.length, 8));
+    const shown = [...fromMine, ...extra.slice(0, 12 - fromMine.length)];
     return {
       total: rows.length,
-      sample: rows.slice(0, 12).map((r) => ({ track: r.name, artist: r.artist, city: r.city })),
+      mine: mine.length,
+      sample: shown.map((r) => ({
+        track: r.name,
+        artist: r.artist,
+        city: r.city,
+        // Only on a row that is not yours: the sample is mostly your own music
+        // and naming you on every line of it says nothing.
+        who: r.who ?? null,
+      })),
       places: [...new Set(rows.map((r) => r.city).filter(Boolean))].slice(0, 20),
+      /**
+       * Which libraries this count is of. Echoed rather than assumed: the panel
+       * ticks a box before the answer for it has landed, and without this it
+       * would have to guess whether the number on screen is the old one.
+       */
+      included: picked.map((s) => s.friend.id),
+      /** Every imported library with something here — ticked or not. */
+      shared: shared.map((s) => ({
+        id: s.friend.id,
+        name: s.friend.display_name,
+        tracks: s.rows.length,
+        missing: s.rows.filter((r) => !r.mine).length,
+      })),
     };
   },
 
   '/api/playlist-create': async (url, body) => {
     const { placeQid, iso, name } = body ?? {};
     if (!placeQid && !iso) return { error: 'placeQid or iso required' };
-    const rows = placeTracks({ qid: placeQid, iso });
-    const uris = [...new Set(rows.map((r) => r.uri).filter(Boolean))];
+    const mine = placeTracks({ qid: placeQid, iso });
+    // Ids rather than uris on their side: a shared file carries no uri, for the
+    // same reason their tracks play through a uri the caller builds.
+    const chosen = new Set(bodyFriendIds(body));
+    const picked = chosen.size ? sharedAtPlace({ qid: placeQid, iso }).filter((s) => chosen.has(s.friend.id)) : [];
+    const uris = [...new Set(mine.map((r) => r.uri).filter(Boolean))];
+    const seen = new Set(uris);
+    for (const s of picked)
+      for (const r of s.rows) {
+        const uri = `spotify:track:${r.spotify_id}`;
+        if (!seen.has(uri)) {
+          seen.add(uri);
+          uris.push(uri);
+        }
+      }
     if (!uris.length) return { error: 'nothing to add' };
-    const playlist = await createPlaylist(name || `Mappify — ${rows[0]?.city ?? 'selection'}`, uris, {
-      description: `Artists from ${name || rows[0]?.city || 'this place'} in my library. Built by Mappify.`,
+    const where = name || mine[0]?.city || picked[0]?.rows[0]?.city || 'this place';
+    const from = picked.length
+      ? `in my library and ${picked.map((s) => s.friend.display_name).join(', ')}'s`
+      : 'in my library';
+    const playlist = await createPlaylist(name || `Mappify — ${where}`, uris, {
+      description: `Artists from ${where} ${from}. Built by Mappify.`,
     });
     return playlist;
   },
@@ -745,7 +864,7 @@ const routes = {
   '/api/search': (url) => {
     const q = (url.searchParams.get('q') ?? '').trim();
     const limit = Math.min(Number(url.searchParams.get('limit') ?? 8), 20);
-    const { scope, friend } = searchScope(url);
+    const { scope, friends } = searchScope(url);
 
     // Sources, by name. LIKE rather than FTS: a library holds hundreds of
     // playlists, not hundreds of thousands, and `imported > 0` is the same rule
@@ -841,50 +960,51 @@ const routes = {
                places: places.map((r) => ({ ...r, owner: 'mine' })) };
     };
 
-    // Whose playlists are searchable: only ever yours.
-    //
-    // Not an oversight and not a gap to be filled later — a share file carries
-    // aggregates, and playlists are deliberately not among them. There is no
-    // friend-side data to match, so rather than returning an empty list that
-    // looks like "no results for that name", the scope is reported and the panel
-    // says why. See `scopeNotes` below.
-    const mineOnlyPlaylists = scope === 'theirs' ? [] : null;
-
     // Nothing typed yet: the panel's resting state is your library, which is
-    // what the source dropdown used to be for — plus a friend's places when a
-    // scope of theirs is selected, since a shared library has no playlists to
-    // rest on and would otherwise answer with nothing at all. See
-    // `friendTopPlaces`.
+    // what the source dropdown used to be for. Under a scope of theirs it is
+    // their playlists and the places they are deepest in — the two things a
+    // shared library now has to rest on. Their places were the whole of it while
+    // a file carried no playlists; see `friendTopPlaces`.
     if (!q) {
       return {
         artists: [],
-        places: scope === 'mine' ? [] : friendTopPlaces(friend, 20),
-        playlists: mineOnlyPlaylists ?? playlists(null, 20),
-        ...scopeNotes(scope, friend),
+        places: scope === 'mine' ? [] : friends.flatMap((id) => friendTopPlaces(id, 20)),
+        playlists: [
+          ...(scope === 'theirs' ? [] : playlists(null, 20)),
+          ...(scope === 'mine' ? [] : friends.flatMap((id) => friendPlaylists(id, null, 20))),
+        ],
+        ...scopeNotes(scope, friends),
       };
     }
 
     if (scope !== 'mine') {
-      const theirs = friendResults(friend, q, limit);
+      // Every visible library, concatenated in the order they are drawn — the
+      // same order their rings stack in, so the list and the globe agree.
+      const each = friends.map((id) => friendResults(id, q, limit));
+      const theirs = {
+        artists: each.flatMap((r) => r.artists),
+        places: each.flatMap((r) => r.places),
+        playlists: friends.flatMap((id) => friendPlaylists(id, `%${q}%`, limit)),
+      };
       if (scope === 'theirs') {
-        return { ...theirs, playlists: [], ...scopeNotes(scope, friend) };
+        return { ...theirs, ...scopeNotes(scope, friends) };
       }
       // 'both': yours first within each kind, because it is the library you can
-      // actually act on — a friend row can be looked at and flown to, but it
-      // cannot become a filter chip on your own globe.
+      // actually act on — a friend row can be looked at, flown to and now opened,
+      // but it cannot become a filter chip on your own globe.
       const mine = mineResults();
       return {
         artists: [...mine.artists, ...theirs.artists].slice(0, limit * 2),
         places: [...mine.places, ...theirs.places].slice(0, limit * 2),
-        playlists: playlists(`%${q}%`, limit),
-        ...scopeNotes(scope, friend),
+        playlists: [...playlists(`%${q}%`, limit), ...theirs.playlists].slice(0, limit * 2),
+        ...scopeNotes(scope, friends),
       };
     }
 
     return {
       ...mineResults(),
       playlists: playlists(`%${q}%`, limit),
-      ...scopeNotes(scope, friend),
+      ...scopeNotes(scope, friends),
     };
   },
 
@@ -1052,6 +1172,162 @@ const routes = {
     };
   },
 
+  /**
+   * Their artists from one place, which is how the panel now lists them.
+   *
+   * A flat list of somebody's tracks is not how this app shows music anywhere
+   * else: your own places list artists, and an artist opens onto the tracks
+   * underneath. Theirs read as a different kind of thing purely because they
+   * were shaped differently, so they are shaped the same way here.
+   *
+   * The totals come back with the artists so the section can say "N here · M you
+   * don't have" without loading every track to count them — the whole point of
+   * grouping is that the tracks arrive only when a row is opened.
+   */
+  '/api/friend-place-artists': (url) => {
+    const id = friendId(url);
+    if (!getFriend(id)) throw badRequest('no such friend');
+    const qid = url.searchParams.get('qid');
+    if (!qid) throw badRequest('which place?');
+    // The exact place, with no subtree walk — see the note on the route above:
+    // an imported library keys place on the artist and has no parent chain, so
+    // there is nothing to roll a country up from.
+    const artists = all(
+      `SELECT fa.spotify_id, fa.name, fa.image_url,
+              (SELECT count(*) FROM friend_tracks ft
+                WHERE ft.friend_id = fa.friend_id AND ft.artist_id = fa.spotify_id) tracks,
+              -- Per artist, so a row can say what is new in it before it is opened.
+              (SELECT count(*) FROM friend_tracks ft
+                WHERE ft.friend_id = fa.friend_id AND ft.artist_id = fa.spotify_id
+                  AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = ft.spotify_id)) missing
+         FROM friend_artists fa
+        WHERE fa.friend_id = ? AND fa.place_qid = ?
+        ORDER BY tracks DESC, fa.name COLLATE NOCASE`,
+      id,
+      qid
+    );
+    const totals = one(
+      `SELECT count(*) tracks,
+              sum(CASE WHEN EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = ft.spotify_id)
+                       THEN 0 ELSE 1 END) missing
+         FROM friend_tracks ft
+         JOIN friend_artists fa
+           ON fa.friend_id = ft.friend_id AND fa.spotify_id = ft.artist_id
+        WHERE ft.friend_id = ? AND fa.place_qid = ?`,
+      id,
+      qid
+    );
+    return { artists, tracks: totals.tracks, missing: totals.missing ?? 0 };
+  },
+
+  /**
+   * Something to play from a place only they have.
+   *
+   * `/api/place-track` reads your own library, so a city you do not have answers
+   * with nothing and the player stays silent — which made their dots the only
+   * ones on the globe that did nothing when clicked. This is the same question
+   * asked of an imported library.
+   *
+   * No `uri` in the row because a shared file has none; the caller builds
+   * `spotify:track:<id>`, as everything else that plays their music does.
+   */
+  '/api/friend-place-track': (url) => {
+    const id = friendId(url);
+    if (!getFriend(id)) throw badRequest('no such friend');
+    const qid = url.searchParams.get('qid');
+    if (!qid) throw badRequest('which place?');
+    const track = one(
+      `SELECT ft.spotify_id, ft.name, fa.name artist
+         FROM friend_tracks ft
+         JOIN friend_artists fa
+           ON fa.friend_id = ft.friend_id AND fa.spotify_id = ft.artist_id
+        WHERE ft.friend_id = ? AND fa.place_qid = ?
+        ORDER BY random() LIMIT 1`,
+      id,
+      qid
+    );
+    return track ?? { error: 'no track for that place' };
+  },
+
+  /** One of their artists, opened: the tracks under it and which you lack. */
+  '/api/friend-artist-tracks': (url) => {
+    const id = friendId(url);
+    if (!getFriend(id)) throw badRequest('no such friend');
+    const artist = url.searchParams.get('artist');
+    if (!artist) throw badRequest('which artist?');
+    return {
+      tracks: all(
+        // idx_ft_artist (friend_id, artist_id) covers this exactly.
+        `SELECT ft.spotify_id, ft.name,
+                EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = ft.spotify_id) mine
+           FROM friend_tracks ft
+          WHERE ft.friend_id = ? AND ft.artist_id = ?
+          ORDER BY ft.name COLLATE NOCASE`,
+        id,
+        artist
+      ),
+    };
+  },
+
+  /**
+   * One of their playlists, opened.
+   *
+   * The one row in a shared library that can be *entered* rather than looked at:
+   * a friend's artist opens onto a page that reads your library, and their place
+   * is a coordinate, but their playlist is a list of tracks and every one of
+   * them plays through the same `spotify:track:` the rest of their music does.
+   *
+   * Alphabetical, and not by accident: `track_sources` has no position column on
+   * either side of the wire and `added_at` deliberately does not travel, so
+   * there is no original order to restore. Inventing one — insertion order, say
+   * — would be presenting an artefact of the export as somebody's sequencing.
+   *
+   * Capped, because their Liked Songs is their whole library. `shown` against
+   * `playlist.tracks` is what lets the panel say a list is not all of it.
+   */
+  '/api/friend-playlist-tracks': (url) => {
+    const id = friendId(url);
+    if (!getFriend(id)) throw badRequest('no such friend');
+    const source = Number(url.searchParams.get('source'));
+    if (!Number.isInteger(source)) throw badRequest('which playlist?');
+    const playlist = one(
+      `SELECT source_id, kind, name, image_url, tracks
+         FROM friend_sources WHERE friend_id = ? AND source_id = ?`,
+      id,
+      source
+    );
+    if (!playlist) throw badRequest('no such playlist');
+    const tracks = all(
+      // LEFT JOIN on the artist: friend_tracks.artist_id is nullable and
+      // validated separately, so an unattributable track keeps its name here
+      // instead of vanishing out of the middle of a playlist.
+      `SELECT ft.spotify_id, ft.name, fa.name artist,
+              EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = ft.spotify_id) mine
+         FROM friend_track_sources fts
+         JOIN friend_tracks ft
+           ON ft.friend_id = fts.friend_id AND ft.spotify_id = fts.track_id
+         LEFT JOIN friend_artists fa
+           ON fa.friend_id = ft.friend_id AND fa.spotify_id = ft.artist_id
+        WHERE fts.friend_id = ? AND fts.source_id = ?
+        ORDER BY ft.name COLLATE NOCASE
+        LIMIT 500`,
+      id,
+      source
+    );
+    // Counted over the whole playlist rather than over the page of it above: a
+    // heading that said "4 you don't have" about the first 500 of 1,990 would be
+    // answering a question nobody asked.
+    const missing = one(
+      `SELECT count(*) n
+         FROM friend_track_sources fts
+        WHERE fts.friend_id = ? AND fts.source_id = ?
+          AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.spotify_id = fts.track_id)`,
+      id,
+      source
+    ).n;
+    return { playlist: { ...playlist, missing }, tracks, shown: tracks.length };
+  },
+
   '/api/compare': (url) => {
     const id = friendId(url);
     const friend = getFriend(id);
@@ -1157,12 +1433,19 @@ const routes = {
  */
 function searchScope(url) {
   const raw = url.searchParams.get('scope');
-  const n = Number(url.searchParams.get('friend'));
-  const id = Number.isInteger(n) && n > 0 ? n : null;
+  // Several ids now, because several libraries can be on the globe at once and
+  // "theirs" has to mean all of them rather than whichever one is open. One
+  // repeated `friend` parameter, so a single id is still a valid request and
+  // every old link keeps working.
+  const ids = url.searchParams
+    .getAll('friend')
+    .flatMap((raw) => raw.split(','))
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .filter((id) => getFriend(id));
   const scope = raw === 'theirs' || raw === 'both' ? raw : 'mine';
-  if (scope === 'mine') return { scope: 'mine', friend: null };
-  if (id == null || !getFriend(id)) return { scope: 'mine', friend: null };
-  return { scope, friend: id };
+  if (scope === 'mine' || !ids.length) return { scope: 'mine', friends: [] };
+  return { scope, friends: ids };
 }
 
 /**
@@ -1170,20 +1453,46 @@ function searchScope(url) {
  *
  * Only ever about what is absent *by design*, never about what merely found
  * nothing. An empty playlist list under a friend scope would otherwise read as
- * "no playlist of theirs matches", when the truth is that a shared library
- * carries no playlists at all — the export is aggregates, deliberately. Saying
- * which of the two it is, is the whole difference between a control that means
- * two things and one that admits which thing it means.
+ * "no playlist of theirs matches" — and there are now two different truths it
+ * could be hiding, which is why this says which.
+ *
+ * A library imported from a format 1 file *could not* carry playlists: nothing
+ * is wrong with it, and there is something to do about it, which is to ask for
+ * a fresh file. A format 2 library with none simply has none. The first is the
+ * one worth reporting, so it wins when both are true of different libraries.
+ *
+ * Silent once playlists are actually there — an empty list then really is a
+ * search that matched nothing, and the empty state says so.
  */
-function scopeNotes(scope, friend) {
-  if (scope === 'mine') return { scope: 'mine', friend: null };
-  return {
-    scope,
-    friend,
-    unavailable: {
-      playlists: 'A shared library carries artists, tracks and places — not playlists.',
-    },
-  };
+function scopeNotes(scope, friends) {
+  if (scope === 'mine') return { scope: 'mine', friends: [] };
+  const rows = friends.map(getFriend).filter(Boolean);
+  const old = rows.filter((f) => (f.format ?? 1) < PLAYLIST_FORMAT);
+  if (old.length) {
+    return {
+      scope,
+      friends,
+      unavailable: {
+        playlists:
+          old.length === 1
+            ? `${old[0].display_name}'s library was shared before playlists travelled in a file. A new one from them would carry them.`
+            : `${old.length} of these libraries were shared before playlists travelled in a file.`,
+      },
+    };
+  }
+  if (rows.length && rows.every((f) => !f.playlists)) {
+    return {
+      scope,
+      friends,
+      unavailable: {
+        playlists:
+          rows.length === 1
+            ? `${rows[0].display_name} shared no playlists — only Liked Songs and playlists somebody made themselves travel.`
+            : 'None of these libraries shared any playlists.',
+      },
+    };
+  }
+  return { scope, friends };
 }
 
 /**
@@ -1232,18 +1541,50 @@ function friendResults(friendId, q, limit) {
       )
     : [];
 
-  const theirs = (row) => ({ ...row, owner: 'theirs' });
+  // The id travels on the row: with several libraries in one list, "theirs" no
+  // longer identifies anything, and the panel needs to know whose colour to put
+  // beside a name.
+  const theirs = (row) => ({ ...row, owner: 'theirs', friend_id: friendId });
   return { artists: artists.map(theirs), places: places.map(theirs) };
+}
+
+/**
+ * Their playlists, in the same shape as your own.
+ *
+ * Same column names as `playlists()` above — `id`, `kind`, `name`, `image_url`,
+ * `imported` — so one row type serves both lists and the panel needs no second
+ * shape for a friend's. `id` is their file's own source id, which is why the row
+ * carries `friend_id`: the two numbers are only an address together.
+ *
+ * `tracks` is the count derived at import from the memberships that actually
+ * arrived, never the number the file claimed. Liked Songs first, then by size —
+ * the biggest thing in a library is the likeliest thing to be looked for in it.
+ *
+ * Only libraries from a format 2 file have any of this; older ones have no rows
+ * here at all, which is what `scopeNotes` explains rather than leaving as a
+ * silence that reads like a failed search.
+ */
+function friendPlaylists(friendId, like, limit) {
+  if (friendId == null) return [];
+  return all(
+    `SELECT source_id id, kind, name, image_url, tracks imported
+       FROM friend_sources
+      WHERE friend_id = ? AND (? IS NULL OR name LIKE ?)
+      ORDER BY (kind = 'liked') DESC, tracks DESC, name COLLATE NOCASE
+      LIMIT ?`,
+    friendId,
+    like,
+    like,
+    limit
+  ).map((row) => ({ ...row, owner: 'theirs', friend_id: friendId }));
 }
 
 /**
  * A friend's library with nothing typed into the box.
  *
  * The resting state for your own library is your playlists — things you can chip
- * without having to know a name. A shared library carries none, so the friend
- * scope used to answer with three empty arrays: no rows, and a note about
- * playlists left standing on its own, which read as the reason the panel was
- * blank without being it.
+ * without having to know a name. Theirs now rest on their playlists too, which
+ * is what `friendPlaylists` above is for; this is the other half of that list.
  *
  * Places rather than artists, because of what a row can do. A friend's artist
  * can be neither chipped nor opened — chips filter your globe and the artist
@@ -1289,6 +1630,21 @@ function friendId(url) {
   if (!Number.isInteger(id) || id <= 0) throw badRequest('which friend?');
   return id;
 }
+
+/**
+ * Several libraries, from a repeated `?friend=` — the shape `searchScope` reads.
+ *
+ * Unlike `friendId` this never throws: a playlist scope with no library named
+ * is the ordinary case, and an id that is not a library any more is dropped
+ * rather than failing the request. Both routes intersect what they are given
+ * with the libraries that actually have tracks at the place, so an id from a
+ * stale tab can only ever ask for nothing.
+ */
+const friendIds = (url) => url.searchParams.getAll('friend').map(Number).filter(Number.isInteger);
+
+/** The same list arriving in a POST body. */
+const bodyFriendIds = (body) =>
+  Array.isArray(body?.friends) ? body.friends.map(Number).filter(Number.isInteger) : [];
 
 /** No JSON route here needs a fraction of this. */
 const MAX_JSON_BODY = 1 << 20;

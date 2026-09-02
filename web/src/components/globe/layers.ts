@@ -42,6 +42,7 @@ export const LAYER = {
   linksHit: 'links-hit',
   linkEnds: 'link-ends',
   friendDots: 'friend-dots',
+  friendLabels: 'friend-labels',
   dots: 'dots',
   labels: 'labels',
   focusLabels: 'focus-labels',
@@ -116,8 +117,6 @@ export const FRIEND_COLOUR = '#f0a726'
  */
 export const FRIEND_COLOURS = ['#f0a726', '#e0508a', '#8b7cf0', '#33c4d8', '#e8543f']
 
-const FRIEND_R = 1.6
-
 const state = (key: string): ExpressionSpecification => [
   'boolean',
   ['feature-state', key],
@@ -187,14 +186,15 @@ const FILL_Z = 2.2
  *
  * Extracted because the friend ring is defined relative to your dot, and two
  * copies of this arithmetic would be two things to keep in step. `prop` is which
- * feature property carries the magnitude: `size` is the feature's own, `mine` is
- * your dot's at the same place.
+ * feature property carries the magnitude: `size` is the feature's own, `mine`
+ * is your dot's at the same place, and `base` is whatever a ring is stacking
+ * outside — your dot, or another library's.
  */
 const grow = (
   mode: DotMode,
   k: number,
   factor: number,
-  prop: 'size' | 'mine',
+  prop: 'size' | 'mine' | 'base',
   /** Flat pixels added after the curve — see FRIEND_GAP. */
   gap = 0
 ): ExpressionSpecification =>
@@ -235,34 +235,43 @@ export function circleRadius(
 const FRIEND_GAP = 3
 
 /**
- * A friend's ring: their magnitude, but never drawn inside your dot.
+ * An imported library's mark: a dot exactly like one of yours, or a ring.
  *
- * Two things are wrong with sizing it on their track count alone. It ignored the
- * dot mode entirely — in colour mode your dots are a uniform disc and the ring
- * stayed on the size curve, so it collapsed underneath them and the overlay
- * simply vanished. And at a shared place their count says nothing about how big
- * *your* dot is, so a city where you have two hundred tracks and they have two
- * drew their ring deep inside your dot.
+ * A place only they have is a real place and now draws as one — same curve, same
+ * factor, same shared `scaleMax`, so their forty-track city is precisely the size
+ * of your forty-track city and only the hue says whose it is. That is the whole
+ * of the "behave like my dots" requirement; the factor used to be 1.6.
  *
- * So: their curve, floored at yours plus a gap, and only where `mine` says you
- * have the place at all. The floor bites exactly in the range where the honest
- * radius could not be seen, and everywhere above it the ring still means how
- * much they have there.
+ * A ring stacks outside whatever is at the centre — your dot where you have the
+ * place, the first library's where you do not — by `base`, plus one gap per
+ * position outward.
  *
- * The floor has to be built into each stop rather than wrapped around the
+ * The rings are **ordinal, not magnitude**. That is a real loss and a forced one:
+ * with two libraries at one city there is nothing to stop ring 1's honest radius
+ * falling inside ring 0's, and rings that cross are a stacking that lies about
+ * its own order. So at a shared place the ring says only *whose*, and how much
+ * moves to the panel. At a place only they have, the dot still carries it.
+ *
+ * The arithmetic has to be built into each stop rather than wrapped around the
  * finished curve. `['+', circleRadius(mode), FRIEND_GAP]` is the obvious way and
  * an invalid style: a `zoom` expression may only be the input of a top-level
  * `interpolate`, so it cannot sit inside arithmetic.
  */
 export function friendRadius(mode: DotMode): DataDrivenPropertyValueSpecification<number> {
   return atZoom((k) => {
-    const theirs = grow(mode, k, FRIEND_R, 'size')
-    const yoursPlusGap = grow(mode, k, 1, 'mine', FRIEND_GAP)
+    const asDot = grow(mode, k, 1, 'size')
+    // One gap per ring outward. `ring` is -1 on a dot, so this branch is only
+    // ever reached with 0 or more.
+    const asRing: ExpressionSpecification = [
+      '+',
+      grow(mode, k, 1, 'base'),
+      ['*', FRIEND_GAP, ['+', ['number', ['get', 'ring'], 0], 1]],
+    ]
     return [
       'case',
-      ['>', ['number', ['get', 'mine'], 0], 0],
-      ['max', theirs, yoursPlusGap],
-      theirs,
+      ['==', ['get', 'kind'], 'ring'],
+      asRing,
+      asDot,
     ] as ExpressionSpecification
   })
 }
@@ -546,22 +555,24 @@ export function buildStyle(
         // place by.
         promoteId: 'qid',
       },
-      // No promoteId. The friend layer carries no feature-state in this version,
-      // and promoting qid here would be a trap waiting for the version that
-      // does: both sources hold the *same* qids for shared cities — that is the
-      // entire point of the overlay — so a feature-state keyed on qid alone
-      // would light your dot and theirs together. Namespace the id before
-      // adding any hover or selection here.
-      // No promoteId either, and for a simpler reason than the friend rings:
-      // this source holds no feature-state at all. It is two points at most, and
-      // they are drawn or they are not.
+      // No promoteId, and for a simpler reason than the dots: this source holds
+      // no feature-state at all. It is two points at most, and they are drawn or
+      // they are not.
       [SOURCE.linkEnds]: {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
       },
+      // One source for every imported library, keyed by a namespaced id.
+      //
+      // This used to carry no promoteId at all, because a single source holding
+      // several libraries would key feature-state on qid — and a shared city has
+      // the same qid in all of them, so hovering one mark would light every
+      // library's. `fid` is `${libraryId}:${qid}`, which is exactly the
+      // namespacing that note asked for, so hover and selection can live here.
       [SOURCE.friendDots]: {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
+        promoteId: 'fid',
       },
       [SOURCE.focus]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     },
@@ -743,7 +754,7 @@ export function buildStyle(
         id: LAYER.friendDots,
         type: 'circle',
         source: SOURCE.friendDots,
-        paint: friendPaint(FRIEND_COLOUR),
+        paint: friendPaint(),
       },
       {
         id: LAYER.dots,
@@ -754,6 +765,44 @@ export function buildStyle(
           'circle-color': circleColor('size'),
           'circle-stroke-color': circleStrokeColor('size'),
           'circle-stroke-width': STROKE_WIDTH,
+        },
+      },
+      // Their names, below yours on purpose.
+      //
+      // Placement runs top layer first, so whichever label layer sits higher
+      // gets first refusal on every slot. Yours therefore go down first and win
+      // every collision; theirs fill what is left. Within this layer the same
+      // sort key arbitrates between libraries by track count, which is why they
+      // share one layer rather than having one each — a layer apiece would rank
+      // them by the order they were added, forever.
+      //
+      // Rings are excluded. A ring is not a place; it says who else has the one
+      // underneath, and that place already has a name from whatever drew the dot.
+      {
+        id: LAYER.friendLabels,
+        type: 'symbol',
+        source: SOURCE.friendDots,
+        filter: ['all', ['!', ['get', 'dim']], ['==', ['get', 'kind'], 'solo']],
+        layout: {
+          ...LABEL_PLACEMENT,
+          'text-field': ['get', 'name'],
+          'symbol-sort-key': ['-', 0, ['get', 'tracks']],
+        },
+        paint: {
+          ...LABEL_PAINT,
+          // The same white as your own names, not the library's hue. Colour is
+          // the dot's job and the dot is right there; a tinted name only made
+          // the one thing that has to stay readable over snow and ocean harder
+          // to read, and said nothing the mark beneath it had not already said.
+          'text-color': ['case', state('hover'), '#fff', LABEL_PAINT['text-color']],
+          'text-halo-width': ['case', state('hover'), 1.6, LABEL_PAINT['text-halo-width']],
+          // Exactly as LAYER.labels does it, and for the same reason: when the
+          // focus layer draws a forced copy of a name, the copy placed here has
+          // to go transparent or the place is labelled twice, a few pixels
+          // apart. Hidden rather than filtered, so the slot stays reserved and
+          // the names around it do not shuffle to fill a gap.
+          'text-opacity': ['case', forced, 0, 1],
+          'text-opacity-transition': { duration: 0 },
         },
       },
       {
@@ -868,20 +917,48 @@ export function linkEndPaint() {
   }
 }
 
-export function friendPaint(colour: string, mode: DotMode = 'size') {
+/**
+ * Every imported library, from one layer.
+ *
+ * The colour is data, not paint: `['get','colour']` means a single layer serves
+ * any number of libraries, and a new one costs a feature rather than a layer.
+ * Repainting for a newly picked hue then means re-emitting the collection — a
+ * few thousand features, which the overlay already does on every prop change.
+ *
+ * A dot is filled and a ring is not. Hollow used to read as absence, and for a
+ * place only they have it still would — those are filled. A ring is not a place
+ * though; it is a mark saying *who else* has the one underneath it, and there is
+ * something at its centre already.
+ */
+export function friendPaint(mode: DotMode = 'size') {
   return {
     'circle-radius': friendRadius(mode),
-    'circle-color': 'rgba(0,0,0,0)',
-    'circle-stroke-color': colour,
-    'circle-stroke-width': 1.4,
+    'circle-color': [
+      'case',
+      state('selected'), SELECTED,
+      ['get', 'dim'], DIM_FILL,
+      state('hover'), ['get', 'hot'],
+      // Rings show the ground through them; only a dot is filled.
+      ['==', ['get', 'kind'], 'ring'], 'rgba(0,0,0,0)',
+      ['get', 'colour'],
+    ] as DataDrivenPropertyValueSpecification<string>,
+    // Matches the 0.85 the own-dot ramp uses, so neither library looks heavier
+    // than the other on a globe showing both.
+    'circle-opacity': 0.85,
+    'circle-stroke-color': [
+      'case',
+      state('selected'), '#fff',
+      ['get', 'dim'], DIM_STROKE,
+      state('hover'), ['get', 'hot'],
+      ['get', 'colour'],
+    ] as DataDrivenPropertyValueSpecification<string>,
+    'circle-stroke-width': [
+      'case',
+      ['any', state('selected'), state('hover')], 1.6,
+      1.4,
+    ] as DataDrivenPropertyValueSpecification<number>,
     'circle-stroke-opacity': 0.85,
   }
-}
-
-/** Repaint the friend rings for a newly picked colour. No re-upload. */
-export function applyFriendColour(map: Map, colour: string) {
-  if (!map.getLayer(LAYER.friendDots)) return
-  map.setPaintProperty(LAYER.friendDots, 'circle-stroke-color', colour)
 }
 
 /** Repaint the dots for a different encoding. No source change, no re-upload. */

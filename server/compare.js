@@ -335,31 +335,42 @@ export function compareLibraries(mine, theirs, { top = 10 } = {}) {
     onlyMine: onlyIn(myArtists, theirArtists, artistMeta),
     onlyTheirs: onlyIn(theirArtists, myArtists, theirArtistMeta),
 
-    discoveries: discoveriesFor(mine, theirs, myArtists, theirArtists, artistMeta),
+    // Their artists, in cities you are deepest in — see the note on the
+    // function. The arguments are the mirror of what they read as: the library
+    // being drawn *from* comes first.
+    discoveries: discoveriesFor(theirs, mine, theirArtists, myArtists, theirArtistMeta),
   };
 }
 
 /**
- * Artists you could introduce them to, in cities they already love.
+ * Artists in their library you have never heard, from cities you already love.
  *
  * This is the whole point of doing this inside Mappify rather than on any of the
- * sites that already compare two Spotify accounts. `onlyMine` sorted by track
- * count is true and useless — it prints your own top ten on every friend's page,
- * whoever the friend is. This asks a question that needs the place graph: which
- * artists do I have, that they have *none* of, from the cities *they* are
- * deepest in? The answer is different for every pair, and it is the sentence
- * people screenshot — "you have four artists from Gothenburg they've never heard
- * of".
+ * sites that already compare two Spotify accounts. `onlyTheirs` sorted by track
+ * count is true and useless — it prints their top ten whoever is looking. This
+ * asks a question that needs the place graph: which artists do *they* have, that
+ * I have *none* of, from the cities *I* am deepest in? The answer is different
+ * for every pair, and it is the sentence people screenshot — "they have four
+ * artists from Gothenburg you've never heard of".
+ *
+ * It used to run the other way, listing your artists for cities they were deep
+ * in, under a step called "For them". Which is a fine thing to know and the
+ * wrong thing to open a panel for: you are looking at somebody else's library to
+ * find out what is in it, not to audit what you could post at them.
+ *
+ * The parameters are named from the perspective of the answer, so `source` is
+ * the library the artists come out of and `target` is the one whose cities pick
+ * them. Passing them the other way round is the old behaviour, exactly.
  *
  * Grouped by place rather than returned flat, because that sentence is about a
  * city and needs the city to be the unit.
  */
-function discoveriesFor(mine, theirs, myArtists, theirArtists, artistMeta) {
-  // Their strongest cities, not all of them: an artist from a place they have a
-  // single track from is not a discovery aimed at anyone.
+function discoveriesFor(source, seeker, sourceArtists, seekerArtists, sourceMeta) {
+  // Your strongest cities, not all of them: an artist from a place you have a
+  // single track from is not a discovery aimed at you.
   const DEPTH = 25;
   const target = new Map(
-    [...(theirs.places ?? [])]
+    [...(seeker.places ?? [])]
       .filter((p) => p?.qid && Number(p.tracks) > 0)
       .sort(byTracks)
       .slice(0, DEPTH)
@@ -368,17 +379,18 @@ function discoveriesFor(mine, theirs, myArtists, theirArtists, artistMeta) {
   if (!target.size) return [];
 
   const grouped = new Map();
-  for (const a of mine.artists ?? []) {
+  for (const a of source.artists ?? []) {
     if (!a?.id || !a.place_qid) continue;
-    if (theirArtists.has(a.id)) continue;
+    if (seekerArtists.has(a.id)) continue;
     if (!target.has(a.place_qid)) continue;
-    if (!myArtists.has(a.id)) continue;
+    if (!sourceArtists.has(a.id)) continue;
     if (!grouped.has(a.place_qid)) grouped.set(a.place_qid, []);
     grouped.get(a.place_qid).push({
       id: a.id,
       name: a.name ?? a.id,
-      tracks: myArtists.get(a.id),
-      image_url: artistMeta.get(a.id)?.image_url ?? null,
+      // Their count, since it is their artist: how much of this is waiting.
+      tracks: sourceArtists.get(a.id),
+      image_url: sourceMeta.get(a.id)?.image_url ?? null,
     });
   }
 
@@ -391,11 +403,11 @@ function discoveriesFor(mine, theirs, myArtists, theirArtists, artistMeta) {
         country_iso: p.country_iso ?? null,
         lat: p.lat ?? null,
         lon: p.lon ?? null,
-        /** How deep they already are in this city — why the suggestion lands. */
-        theirTracks: p.tracks,
+        /** How deep you already are in this city — why the suggestion lands. */
+        yourTracks: p.tracks,
         artists: artists.sort(byTracks),
       };
     })
-    // Most to offer first, then by how much they already care about the place.
-    .sort((x, y) => y.artists.length - x.artists.length || y.theirTracks - x.theirTracks);
+    // Most to hear first, then by how much you already care about the place.
+    .sort((x, y) => y.artists.length - x.artists.length || y.yourTracks - x.yourTracks);
 }

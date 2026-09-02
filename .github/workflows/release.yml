@@ -234,6 +234,21 @@ jobs:
           body: |
             Download the file for your computer, unzip it, and open **Mappify**.
 
+            New to this, or on a Mac? **[Getting started, with
+            pictures](https://github.com/troppochristiano/mappify/blob/main/docs/getting-started.md)**
+            has every dialog below drawn out, a screen at a time.
+
+            ### Sharing a library
+
+            A `.mappify` file now carries playlists — their names, their covers,
+            and which of the tracks are in them — so an imported library is
+            searchable by playlist rather than only by artist and place.
+
+            Both people need this version. A file written here cannot be opened
+            by an older copy, which will say it was made by a different version;
+            an older file still opens here, as a library with no playlists in it,
+            and the search panel says which of the two it is looking at.
+
             Nothing to install — the runtime and the origin index are both inside,
             so your library is placed on the map in seconds and Spotify is the only
             thing it talks to.

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="880" height="340" role="img" aria-label="A Finder window showing Mappify.app next to the downloaded zip, with an arrow to the Applications folder.">
+  <rect width="880" height="340" rx="14" fill="#eef1f5"/>
+
+  <!-- Finder window -->
+  <rect x="28" y="34" width="470" height="272" rx="12" fill="#ffffff" stroke="#d7dbe0"/>
+  <path d="M28 46a12 12 0 0 1 12-12h446a12 12 0 0 1 12 12v26H28z" fill="#f6f7f9"/>
+  <circle cx="50" cy="53" r="6" fill="#ff5f57"/><circle cx="70" cy="53" r="6" fill="#febc2e"/><circle cx="90" cy="53" r="6" fill="#28c840"/>
+  <text x="263" y="58" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1d1d1f">Downloads</text>
+
+  <!-- zip -->
+  <g transform="translate(96,110)">
+    <rect x="0" y="0" width="74" height="86" rx="8" fill="#e9edf2" stroke="#cfd6de"/>
+    <rect x="30" y="0" width="14" height="46" fill="#cfd6de"/>
+    <rect x="32" y="46" width="10" height="14" rx="2" fill="#9aa6b2"/>
+    <text x="37" y="112" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6e73">mappify-macos</text>
+    <text x="37" y="128" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6e73">-arm64.zip</text>
+  </g>
+
+  <text x="212" y="163" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" fill="#9aa6b2">→</text>
+
+  <!-- app -->
+  <g transform="translate(258,104)">
+    <rect x="0" y="0" width="88" height="88" rx="20" fill="#0b1a2b"/>
+    <circle cx="44" cy="44" r="29" fill="none" stroke="#5ad1ff" stroke-width="2.5"/>
+    <ellipse cx="44" cy="44" rx="13" ry="29" fill="none" stroke="#5ad1ff" stroke-width="2"/>
+    <path d="M17 34h54M17 54h54" stroke="#5ad1ff" stroke-width="2" fill="none"/>
+    <circle cx="56" cy="30" r="4" fill="#ff8a3d"/>
+    <text x="44" y="118" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1d1d1f">Mappify</text>
+  </g>
+
+  <!-- drag arrow -->
+  <path d="M520 168 C 580 168, 600 168, 654 168" stroke="#e8590c" stroke-width="3" fill="none" stroke-dasharray="7 7"/>
+  <path d="M654 168 l-13 -7 v14 z" fill="#e8590c"/>
+  <text x="587" y="152" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#e8590c">drag</text>
+
+  <!-- Applications folder -->
+  <g transform="translate(672,116)">
+    <path d="M4 12a8 8 0 0 1 8-8h34l10 12h56a8 8 0 0 1 8 8v56a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8z" fill="#7fb2f0"/>
+    <path d="M4 26a8 8 0 0 1 8-8h108a8 8 0 0 1 8 8v50a8 8 0 0 1-8 8H12a8 8 0 0 1-8-8z" fill="#a9cdf7"/>
+    <text x="64" y="112" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1d1d1f">Applications</text>
+  </g>
+</svg>

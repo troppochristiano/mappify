@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360" role="img" aria-label="The Windows SmartScreen dialog: click More info, then Run anyway.">
+  <rect width="880" height="360" rx="14" fill="#eef1f5"/>
+
+  <!-- before -->
+  <rect x="34" y="40" width="370" height="240" rx="10" fill="#ffffff" stroke="#d7dbe0"/>
+  <rect x="34" y="40" width="370" height="34" rx="10" fill="#f6f7f9"/>
+  <text x="52" y="62" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#6e6e73">Windows protected your PC</text>
+  <text x="404" y="62" text-anchor="end" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="14" fill="#6e6e73">✕</text>
+  <text x="56" y="112" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#1d1d1f">Windows protected your PC</text>
+  <text x="56" y="142" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#3c3c43">Microsoft Defender SmartScreen prevented an</text>
+  <text x="56" y="160" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#3c3c43">unrecognised app from starting. Running this app</text>
+  <text x="56" y="178" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#3c3c43">may put your PC at risk.</text>
+  <text x="56" y="206" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#0067c0" text-decoration="underline">More info</text>
+  <rect x="286" y="228" width="100" height="30" rx="5" fill="#e9edf2" stroke="#cfd6de"/>
+  <text x="336" y="248" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1d1d1f">Don't run</text>
+  <path d="M212 202 H 126" stroke="#e8590c" stroke-width="2.5" fill="none"/>
+  <path d="M126 202 l12 -6 v12 z" fill="#e8590c"/>
+  <text x="222" y="207" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e8590c">1. click this</text>
+
+  <!-- arrow between -->
+  <path d="M424 160 H 462" stroke="#9aa6b2" stroke-width="3" fill="none"/>
+  <path d="M462 160 l-12 -6 v12 z" fill="#9aa6b2"/>
+
+  <!-- after -->
+  <rect x="480" y="40" width="370" height="240" rx="10" fill="#ffffff" stroke="#d7dbe0"/>
+  <rect x="480" y="40" width="370" height="34" rx="10" fill="#f6f7f9"/>
+  <text x="498" y="62" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#6e6e73">Windows protected your PC</text>
+  <text x="502" y="112" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#1d1d1f">Windows protected your PC</text>
+  <text x="502" y="146" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#3c3c43">App: mappify-setup-windows-x64.exe</text>
+  <text x="502" y="166" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#3c3c43">Publisher: Unknown publisher</text>
+  <rect x="616" y="228" width="104" height="30" rx="5" fill="#e9edf2" stroke="#cfd6de"/>
+  <text x="668" y="248" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1d1d1f">Run anyway</text>
+  <rect x="732" y="228" width="100" height="30" rx="5" fill="#e9edf2" stroke="#cfd6de"/>
+  <text x="782" y="248" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="12.5" fill="#1d1d1f">Don't run</text>
+  <path d="M668 306 V 264" stroke="#e8590c" stroke-width="3" fill="none"/>
+  <path d="M668 264 l-6 12 h12 z" fill="#e8590c"/>
+  <text x="668" y="330" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#e8590c">2. Run anyway</text>
+</svg>

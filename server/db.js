@@ -249,6 +249,33 @@ CREATE TABLE IF NOT EXISTS friend_tracks (
   PRIMARY KEY (friend_id, spotify_id)
 ) WITHOUT ROWID;
 
+-- Their playlists, and Liked Songs, which is a source like any other. Only files
+-- of format 2 and up carry these; a library imported from an older file simply
+-- has no rows here, and friends.format is what tells that apart from a library
+-- that genuinely has none.
+--
+-- source_id is the number the *file* used and is meaningless outside it. It is
+-- never joined to sources: yours and theirs are two unrelated sequences, and a
+-- join between them would silently pair your playlist 4 with their playlist 4.
+CREATE TABLE IF NOT EXISTS friend_sources (
+  friend_id   INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  source_id   INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  image_url   TEXT,
+  tracks      INTEGER NOT NULL,
+  PRIMARY KEY (friend_id, source_id)
+) WITHOUT ROWID;
+
+-- Key order is the question: "every track in this playlist" is then one range
+-- scan, which is the only way this table is ever read.
+CREATE TABLE IF NOT EXISTS friend_track_sources (
+  friend_id   INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  source_id   INTEGER NOT NULL,
+  track_id    TEXT NOT NULL,
+  PRIMARY KEY (friend_id, source_id, track_id)
+) WITHOUT ROWID;
+
 -- The reverse direction the primary keys cannot serve: "which of my friends has
 -- this artist", which the artist panel wants the moment this ships.
 CREATE INDEX IF NOT EXISTS idx_fa_artist ON friend_artists(spotify_id);
@@ -350,6 +377,10 @@ const ADDED_COLUMNS = [
   ['sources', 'image_url', 'TEXT'],
   ['sources', 'owned', 'INTEGER'],
   ['sources', 'note', 'TEXT'],
+  // How many playlists an imported library brought. Nullable on purpose, like
+  // unplaced_tracks: a library imported before this column existed did not
+  // carry any and did not fail to — `friends.format` is what says which.
+  ['friends', 'playlists', 'INTEGER'],
 ];
 
 export function openDb(file = DB_PATH) {

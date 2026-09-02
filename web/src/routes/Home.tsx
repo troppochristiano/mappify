@@ -1,7 +1,7 @@
 import { useState, useEffect, useDeferredValue, useMemo, useCallback, useRef } from 'react'
-import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { api, type Artist, type PlaceLink, type PlaceTrack, type SearchScope } from '../lib/api'
+import { api, type Artist, type Owner, type PlaceLink, type PlaceTrack, type SearchScope } from '../lib/api'
 import {
   Globe,
   DOT_MODES,
@@ -12,9 +12,11 @@ import {
 import { SpotifyPlayer, type NowPlaying } from '../components/SpotifyPlayer'
 import { PlaceView, pathTo, nodeAt, type Crumb, type PlaceSelection } from '../components/PlaceView'
 import { ArtistRow } from '../components/ArtistRow'
+import { FriendArtistRow } from '../components/FriendArtistRow'
 import { ArtistDetail } from '../components/ArtistDetail'
 import { SetupPanel } from '../components/SetupPanel'
 import { PlaylistBuilder } from '../components/PlaylistBuilder'
+import { FriendPlaylistPanel } from '../components/FriendPlaylistPanel'
 import { TunedReadout } from '../components/TunedReadout'
 import { SearchPanel } from '../components/SearchPanel'
 import { ComparePanel } from '../components/ComparePanel'
@@ -140,14 +142,37 @@ function readFriendColours(): Record<string, string> {
   return map
 }
 
-/** The remembered library, if the stored value still looks like a row id. */
-function readFriendId(): number | null {
-  const raw = localStorage.getItem(FRIEND_KEY)
+/** One remembered id, guarded — anything else would reach the API as NaN. */
+const asId = (raw: string | null): number | null => {
   if (raw === null) return null
   const id = Number(raw)
-  // Guarded rather than trusted: anything else in there would otherwise be sent
-  // to the API as NaN, which is a request for a friend that cannot exist.
   return Number.isInteger(id) && id > 0 ? id : null
+}
+
+/**
+ * The libraries drawn on the globe, migrating the single one this replaced.
+ *
+ * The key held one id for as long as only one overlay existed. Everybody who has
+ * used the feature has one, so it is read as a list of one rather than dropped —
+ * losing the selection would be a small thing done to every user to save writing
+ * six lines.
+ */
+function readOverlayIds(): number[] {
+  const raw = localStorage.getItem(FRIEND_KEY)
+  if (raw === null) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed.filter((n) => Number.isInteger(n) && n > 0)
+  } catch {
+    /* not JSON: the old single-id form, handled below */
+  }
+  const one = asId(raw)
+  return one == null ? [] : [one]
+}
+
+/** The library the panels are about — the comparison is pairwise by nature. */
+function readFriendId(): number | null {
+  return readOverlayIds()[0] ?? null
 }
 
 /** How long the loader takes to fade out. Mirrors `.globe-loading--gone`. */
@@ -180,6 +205,15 @@ type Push =
   | { kind: 'artist'; id: string }
   | { kind: 'collab'; a: string; b: string }
   | { kind: 'playlist' }
+  /**
+   * One of *their* playlists, opened from a search under an imported scope.
+   *
+   * The name rides along so the dock head can say it the moment the panel
+   * opens — the same reason the artist push carries nothing but an id and the
+   * head falls back to the row you clicked. A source id is theirs, so it is
+   * only ever an address alongside the library it came from.
+   */
+  | { kind: 'friend-playlist'; friendId: number; sourceId: number; name: string }
 
 /**
  * The globe is the app. Search sits on top of it and filters the dots
@@ -296,14 +330,43 @@ export function Home() {
    * a selection that vanished every time the panel closed would take that
    * overlay with it.
    */
-  const [friendId, setFriendId] = useState<number | null>(readFriendId)
+  /**
+   * Every library on the globe, in the order they stack.
+   *
+   * Order is meaningful, not incidental: at a city none of yours covers, the
+   * first of these draws the dot and the rest ring it. So it is a list rather
+   * than a set, and adding a library appends rather than inserting.
+   */
+  const [overlayIds, setOverlayIds] = useState<number[]>(readOverlayIds)
   useEffect(() => {
-    // Removed rather than written as null, so a stale id cannot outlive the
-    // selection it described — which is also what the error effect below relies
-    // on to forget a library that has since been deleted.
-    if (friendId == null) localStorage.removeItem(FRIEND_KEY)
-    else localStorage.setItem(FRIEND_KEY, String(friendId))
-  }, [friendId])
+    // Removed rather than written as an empty list, so a stale value cannot
+    // outlive the selection it described.
+    if (!overlayIds.length) localStorage.removeItem(FRIEND_KEY)
+    else localStorage.setItem(FRIEND_KEY, JSON.stringify(overlayIds))
+  }, [overlayIds])
+
+  /**
+   * The library the panels speak about, which is not the same question as which
+   * are drawn.
+   *
+   * A comparison is between two libraries by definition — `/api/compare` takes
+   * one id and answers about one pairing — so the panels stay singular while the
+   * globe went plural. The first drawn library is the one they mean, which is
+   * also the one whose dot sits at the centre of any stack.
+   */
+  const friendId = overlayIds[0] ?? null
+  const setFriendId = useCallback(
+    (id: number | null) =>
+      setOverlayIds((ids) =>
+        id == null ? [] : [id, ...ids.filter((x) => x !== id)]
+      ),
+    []
+  )
+  const toggleOverlay = useCallback(
+    (id: number) =>
+      setOverlayIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id])),
+    []
+  )
 
   /**
    * A library dropped onto the window, rather than found through the picker.
@@ -351,7 +414,14 @@ export function Home() {
     return () => clearTimeout(id)
   }, [dropNote])
 
-  /** Their rings on or off, without forgetting which library is loaded. */
+  /**
+   * Whether the overlay is drawn at all, without forgetting which are loaded.
+   *
+   * Still one flag rather than one per library, because per-library visibility
+   * is now what `overlayIds` *is*: a library that should not be drawn is not in
+   * the list. This is the master switch — the eye in the places tab, for looking
+   * at your own map for a moment without losing the comparison you set up.
+   */
   const [friendVisible, setFriendVisible] = useState<boolean>(
     () => localStorage.getItem(FRIEND_VISIBLE_KEY) !== '0'
   )
@@ -395,29 +465,89 @@ export function Home() {
     []
   )
 
-  /** What the globe is actually drawing with: the loaded library's own hue. */
+  /** The hue of the library the panels are about. */
   const friendColour = friendId == null ? FRIEND_COLOUR : colourOf(friendId)
 
-  const friendMap = useQuery({
-    queryKey: ['friend-points', friendId],
-    queryFn: () => friendsApi.one(friendId!),
-    enabled: friendId != null,
+  /**
+   * One request per drawn library.
+   *
+   * `useQueries` rather than a route that takes several ids: the cache then
+   * holds a library once regardless of how many overlays it appears in, and
+   * turning one off costs nothing because the others are already resolved.
+   */
+  const friendMaps = useQueries({
+    queries: overlayIds.map((id) => ({
+      queryKey: ['friend-points', id],
+      queryFn: () => friendsApi.one(id),
+    })),
   })
+
+  /** The one the panels read, kept under its old name. */
+  const friendMap = friendMaps[0] ?? { data: undefined, isError: false }
+
+  /**
+   * A signature of what the queries currently hold.
+   *
+   * `useQueries` hands back a fresh array on every render, so depending on it
+   * directly would rebuild the overlay every render — and a new points array is
+   * a full re-upload of every dot on the globe, forever. `dataUpdatedAt` changes
+   * only when a library's data actually does.
+   */
+  const friendDataKey = overlayIds
+    .map((id, i) => `${id}:${colourOf(id)}:${friendMaps[i]?.dataUpdatedAt ?? 0}`)
+    .join('|')
 
   // A remembered library that is not there any more. /api/friend answers "no
   // such friend" for an id that has been deleted, and without this the app would
   // come back holding it: no overlay, no explanation, and the compare tab
-  // offering a detail view of something that is gone.
+  // offering a detail view of something that is gone. Only the failing one is
+  // dropped, so one dead id cannot take the others with it.
+  const failedIds = overlayIds.filter((_, i) => friendMaps[i]?.isError).join(',')
   useEffect(() => {
-    if (friendMap.isError) setFriendId(null)
-  }, [friendMap.isError])
+    if (!failedIds) return
+    const gone = new Set(failedIds.split(',').map(Number))
+    setOverlayIds((ids) => ids.filter((id) => !gone.has(id)))
+  }, [failedIds])
 
-  const friendPoints = useMemo(() => {
-    if (!friendVisible || friendId == null) return undefined
-    // parent_qid is null and stays null: an imported library is a flat list of
-    // places with no containment tree, so there is no hierarchy to claim.
-    return friendMap.data?.points.map((p) => ({ ...p, parent_qid: null }))
-  }, [friendVisible, friendId, friendMap.data])
+  /**
+   * What the globe draws: every loaded library, with its colour, in stack order.
+   *
+   * parent_qid is null and stays null: an imported library is a flat list of
+   * places with no containment tree, so there is no hierarchy to claim.
+   */
+  const friends = useMemo(() => {
+    if (!friendVisible) return undefined
+    const out = overlayIds
+      .map((id, i) => ({
+        id,
+        colour: colourOf(id),
+        // parent_qid is null and stays null: an imported library is a flat list
+        // of places with no containment tree, so there is no hierarchy to claim.
+        points: (friendMaps[i]?.data?.points ?? []).map((p) => ({ ...p, parent_qid: null })),
+      }))
+      .filter((f) => f.points.length)
+    return out.length ? out : undefined
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [friendVisible, friendDataKey])
+
+  /** A library's own name, for marks and headings that have only its id. */
+  const nameOf = useCallback(
+    (id: number) => {
+      const i = overlayIds.indexOf(id)
+      return i < 0 ? null : (friendMaps[i]?.data?.friend.display_name ?? null)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [friendDataKey]
+  )
+
+  /** Their places for the list and the breadcrumbs, with the library on each. */
+  const friendPlaces = useMemo(
+    () =>
+      (friends ?? []).flatMap((f) =>
+        f.points.map((p) => ({ ...p, libId: f.id, colour: f.colour }))
+      ),
+    [friends]
+  )
 
   // Containment is always drawn now, so the only thing left to decide is the
   // collaboration arcs. Off by default: they are a question you go asking, and
@@ -598,14 +728,86 @@ export function Home() {
   )
   const regionName = (iso: string) =>
     new Intl.DisplayNames(['en'], { type: 'region' }).of(iso) ?? iso
+  // Carried in the URL for a place your own points have no row for — see
+  // onNavigate. Read once, so the memos below can depend on the value rather
+  // than on the whole of `params`.
+  const labelParam = params.get('label')
   const filterLabel =
     selected?.name ??
-    params.get('label') ??
+    // A place only an imported library has. Read from their points while they
+    // are drawn, and from the URL when they are not — a selection that survives
+    // a reload has to keep its name, and "Selection" was the name a playlist
+    // built from one ended up with.
+    friendPlaces.find((p) => p.qid === selectedQid)?.name ??
+    labelParam ??
     cityFilter ??
     (citylessFilter ? (isoFilter ? 'City unknown' : 'No known origin') : null) ??
     (unknownFilter ? 'Unknown origin' : null) ??
     (isoFilter ? regionName(isoFilter) : null) ??
     'Selection'
+
+  /**
+   * What the imported library has from the place you are looking at.
+   *
+   * Only for a single place: their library is keyed by place on the artist, so
+   * there is no subtree to roll a country up from — and a country's worth of
+   * somebody else's tracks is a list nobody reads anyway.
+   *
+   * Gated on the same eye as their dots. Hiding a library should hide it
+   * everywhere, not just on the globe.
+   */
+  /**
+   * Their artists at this place, one request per library.
+   *
+   * Artists rather than tracks, so a section is the same shape as your own list
+   * above it. The tracks under an artist are fetched only when its row is
+   * opened — see FriendArtistRow — which is what keeps a place holding forty of
+   * their artists to a single request.
+   */
+  const friendArtistQueries = useQueries({
+    queries: (friends ?? []).map((f) => ({
+      queryKey: ['friend-place-artists', f.id, selectedQid],
+      queryFn: () => friendsApi.placeArtists(f.id, selectedQid!),
+      enabled: !!selectedQid,
+    })),
+  })
+
+  /** One section's worth of somebody else's music, ready to render. */
+  const friendSections = useMemo(
+    () =>
+      (friends ?? [])
+        .map((f, i) => ({
+          id: f.id,
+          colour: f.colour,
+          name: friendMaps[i]?.data?.friend.display_name ?? 'Imported library',
+          artists: friendArtistQueries[i]?.data?.artists ?? [],
+          // Counted by the server across the whole place, so the heading does
+          // not have to load every track to say how much is here.
+          tracks: friendArtistQueries[i]?.data?.tracks ?? 0,
+          missing: friendArtistQueries[i]?.data?.missing ?? 0,
+        }))
+        .filter((sec) => sec.artists.length),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [friends, friendDataKey, friendArtistQueries.map((q) => q.dataUpdatedAt ?? 0).join(',')]
+  )
+
+  /**
+   * Whether any imported library has music where you are looking.
+   *
+   * Read off the loaded maps rather than off `friends`, which is gated on the
+   * eye: asking the visible overlays would make the answer "no" the moment they
+   * were hidden, and take the control for showing them again with it.
+   *
+   * True at the root and at every level that is not a place: the eye is a globe
+   * switch, and the globe is the whole world when nothing is selected.
+   */
+  const theirsHere = useMemo(() => {
+    const points = overlayIds.flatMap((_, i) => friendMaps[i]?.data?.points ?? [])
+    if (selectedQid) return points.some((pt) => pt.qid === selectedQid)
+    if (isoFilter) return points.some((pt) => pt.country_iso === isoFilter)
+    return true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [friendDataKey, selectedQid, isoFilter])
 
   const artists = useQuery({
     queryKey: ['artists', 'filter', selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, filterKey],
@@ -622,26 +824,96 @@ export function Home() {
     enabled: hasFilter,
   })
 
+  /**
+   * Whether your own library has this place at all, answered without asking.
+   *
+   * Your points are already here, so a place that is not among them has nothing
+   * of yours to play and `/api/place-track` can be skipped outright. That is
+   * what keeps a click on somebody else's dot to one request instead of waiting
+   * for yours to come back empty first.
+   */
+  const yoursHasPlace = Boolean(
+    selectedQid && map.data?.points.some((pt) => pt.qid === selectedQid)
+  )
+
   const track = useQuery({
     queryKey: ['place-track', selectedQid],
     queryFn: () => api.placeTrack(selectedQid!),
-    enabled: Boolean(selectedQid),
+    enabled: Boolean(selectedQid) && yoursHasPlace,
     // The previous place's track rather than undefined while the next one is in
     // flight, so `source` below never dips to null between two real tracks.
     placeholderData: keepPreviousData,
+  })
+
+  /**
+   * The same question, asked of an imported library.
+   *
+   * A place only they have has nothing of yours to play, so `/api/place-track`
+   * answers with an error and the player stays silent — which made their dots
+   * the one kind on the globe that did nothing when clicked.
+   *
+   * The first library that has the place, which is the one whose dot is drawn
+   * at the centre of any stack: the thing you clicked is the thing that plays.
+   */
+  const friendWithPlace = selectedQid
+    ? (friends ?? []).find((f) => f.points.some((pt) => pt.qid === selectedQid))
+    : undefined
+  const friendTrack = useQuery({
+    queryKey: ['friend-place-track', friendWithPlace?.id, selectedQid],
+    queryFn: () => friendsApi.placeTrack(friendWithPlace!.id, selectedQid!),
+    // Fired at the same moment yours would be, not after it has failed. Waiting
+    // on your own request to come back empty first meant two round trips before
+    // a note was heard, which is the whole of why their dots felt slow.
+    enabled: Boolean(selectedQid && friendWithPlace) && !yoursHasPlace,
   })
 
   // A track picked by hand (an artist or a song in the results) wins over the
   // place's random pick, until the place changes and re-tunes.
   const [manual, setManual] = useState<PlaceTrack | null>(null)
 
-  const source = manual ?? track.data ?? null
+  /** Their pick, in the shape the player already takes. */
+  const theirTrack: PlaceTrack | null =
+    friendTrack.data && 'spotify_id' in friendTrack.data
+      ? {
+          spotify_id: friendTrack.data.spotify_id,
+          name: friendTrack.data.name,
+          uri: `spotify:track:${friendTrack.data.spotify_id}`,
+          // A shared file carries neither, and inventing them would put a wrong
+          // album under a right song.
+          album: null,
+          artist: friendTrack.data.artist,
+          city: null,
+        }
+      : null
+
+  /**
+   * Yours, but only where yours is about *this* place.
+   *
+   * The query keeps the previous place's track while the next is in flight, so
+   * the sound never dips between two of your own cities — and that placeholder
+   * was being played at a place you do not have, so clicking somebody else's dot
+   * replayed your last song before correcting itself a moment later.
+   */
+  const yoursTrack = yoursHasPlace && track.data && 'uri' in track.data && track.data.uri
+    ? track.data
+    : null
+
+  const source = manual ?? yoursTrack ?? theirTrack ?? null
   const nowPlaying: NowPlaying = source?.uri
     ? {
         uri: source.uri,
         name: source.name,
         artist: source.artist,
-        place: (manual ? source.city : selected?.name ?? source.city) ?? '',
+        // Their places are not in your tree, so the readout falls back to the
+        // overlay for a name rather than showing a song from nowhere.
+        place:
+          (manual
+            ? source.city
+            : selected?.name ??
+              (selectedQid
+                ? friendWithPlace?.points.find((pt) => pt.qid === selectedQid)?.name
+                : null) ??
+              source.city) ?? '',
       }
     : null
 
@@ -902,15 +1174,27 @@ export function Home() {
     // its name, because the labels layer filters on dim.
     setStack([])
     const next = new URLSearchParams(params)
-    for (const k of ['place', 'iso', 'city', 'unknown', 'cityless']) next.delete(k)
+    for (const k of ['place', 'iso', 'city', 'unknown', 'cityless', 'label']) next.delete(k)
 
     if (s.kind === 'place') {
-      const point = map.data?.points.find((p) => p.qid === s.qid)
+      // Theirs as a fallback, never in preference: a city you both have is flown
+      // to by your own coordinates. A city only they have has none of yours, and
+      // was previously the reason a friend's dot could only be looked at.
+      const point =
+        map.data?.points.find((p) => p.qid === s.qid) ??
+        friendMap.data?.points.find((p) => p.qid === s.qid)
       // A floor, not a framing: if you have already zoomed past this, picking a
       // dot just centres it and leaves your zoom alone.
       if (point)
         setFlyTo({ kind: 'point', lat: point.lat, lon: point.lon, zoom: CITY_ZOOM, key: s.qid })
+      // Whose place it is is not recorded: it is derivable from whether your
+      // own points have the qid, and a stored answer could disagree with them.
       next.set('place', s.qid)
+      // The name, though, is not derivable for a place only an imported library
+      // has: your points have no row to read it off, and with their overlay
+      // hidden neither do theirs. Without it the panel called the place
+      // "Selection" — and so did the playlist it offered to build from it.
+      if (!map.data?.points.some((pt) => pt.qid === s.qid) && s.label) next.set('label', s.label)
     } else if (s.kind === 'country' && s.iso) {
       const frame = countryFrame(s.iso)
       if (frame) setFlyTo({ ...frame, key: s.iso })
@@ -938,9 +1222,19 @@ export function Home() {
    * it was — so the two routes to the same place behaved differently. Going
    * through onNavigate means they cannot drift apart again.
    */
-  const select = (qid: string) => {
+  const select = (qid: string, owner: Owner = 'mine') => {
     const point = map.data?.points.find((p) => p.qid === qid)
-    onNavigate({ kind: 'place', qid, label: point?.name ?? 'Place' })
+    // Every drawn library, not just the first: with two overlays on, a dot that
+    // belongs only to the second one had no name to carry.
+    const theirs = friendPlaces.find((p) => p.qid === qid)
+    onNavigate({
+      kind: 'place',
+      qid,
+      label: point?.name ?? theirs?.name ?? 'Place',
+      // Only when it is theirs *and* not also yours: a city you share is your
+      // own place with their tracks underneath, not a foreign one.
+      owner: owner === 'theirs' && !point ? 'theirs' : undefined,
+    })
   }
 
   const countries = tree.data?.countries ?? []
@@ -951,7 +1245,25 @@ export function Home() {
     if (selectedQid) {
       const found = pathTo(countries, selectedQid)
       if (found) return [root, ...found]
-      return [root, { label: selected?.name ?? 'Place', select: { kind: 'place', qid: selectedQid, label: selected?.name ?? 'Place' } }]
+      // Nothing in your tree. If an imported library has it, the trail is built
+      // from their row instead — a flat list gives no ancestors beyond the
+      // country, and a country is the one level they do carry.
+      const p = friendPlaces.find((x) => x.qid === selectedQid)
+      const label = selected?.name ?? p?.name ?? labelParam ?? 'Place'
+      const country: Crumb[] =
+        p?.country_iso
+          ? [
+              {
+                label: countries.find((c) => c.iso === p.country_iso)?.name ?? p.country_iso,
+                select: { kind: 'country', iso: p.country_iso, label: p.country_iso },
+              },
+            ]
+          : []
+      return [
+        root,
+        ...country,
+        { label, select: { kind: 'place', qid: selectedQid, label, owner: p ? 'theirs' : undefined } },
+      ]
     }
     // Checked before the country, because a cityless selection carries an iso of
     // its own and would otherwise read as "the whole country".
@@ -969,7 +1281,7 @@ export function Home() {
     if (unknownFilter) return [root, { label: 'Unknown', select: { kind: 'unknown', label: 'Unknown' } }]
     if (cityFilter) return [root, { label: cityFilter, select: { kind: 'city', city: cityFilter, label: cityFilter } }]
     return [root]
-  }, [countries, selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, filterLabel, selected?.name])
+  }, [countries, selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, filterLabel, selected?.name, friendPlaces, labelParam])
 
   /** What sits inside the current level. */
   const nested = useMemo(() => {
@@ -994,20 +1306,112 @@ export function Home() {
           ? { kind: 'cityless', iso: n.iso ?? null, label: n.name }
           : { kind: 'city', city: n.city ?? n.name, label: n.name }) as PlaceSelection,
     })
-    if (selectedQid) return (nodeAt(countries, selectedQid)?.children ?? []).map(toRow)
+    /**
+     * The imported library's places, folded into whatever level this is.
+     *
+     * Their places arrive as a flat list — no parent chain, by design — so they
+     * cannot be walked like your tree. What they do carry is a country, and a
+     * country is enough: mark the rows you already have, and append the ones you
+     * do not at the level they belong to.
+     *
+     * Matching differs by level for the same reason. A city row is matched on
+     * qid; a country row has no qid at all and is matched on its iso.
+     */
+    const theirs = friendPlaces
+    /** The libraries that have a place, as colours, in stack order. */
+    const dots = (has: (p: (typeof theirs)[number]) => boolean) => {
+      const seen = new Set<number>()
+      const out: string[] = []
+      for (const p of theirs) {
+        if (!has(p) || seen.has(p.libId)) continue
+        seen.add(p.libId)
+        out.push(p.colour)
+      }
+      return out
+    }
+    const mark = <T extends { key: string; label: string; count: number | null; select: PlaceSelection; drillable: boolean }>(
+      rows: T[],
+      has: (r: T, p: (typeof theirs)[number]) => boolean
+    ) =>
+      theirs.length
+        ? rows.map((r) => {
+            const colours = dots((p) => has(r, p))
+            return colours.length ? { ...r, theirs: colours } : r
+          })
+        : rows
+
+    /**
+     * Their places in a country, minus the ones your rows already cover.
+     *
+     * One row per place, not per library: three libraries with Bristol is one
+     * Bristol wearing three dots, which is the same thing the globe draws.
+     */
+    const only = (iso: string | null, covered: Set<string>) => {
+      const rows = new Map<string, { name: string; colours: string[] }>()
+      for (const p of theirs) {
+        if ((iso !== null && p.country_iso !== iso) || covered.has(p.qid)) continue
+        const row = rows.get(p.qid)
+        if (row) {
+          if (!row.colours.includes(p.colour)) row.colours.push(p.colour)
+        } else rows.set(p.qid, { name: p.name, colours: [p.colour] })
+      }
+      return [...rows].map(([qid, r]) => ({
+        key: `theirs:${qid}`,
+        label: r.name,
+        count: null,
+        drillable: false,
+        theirs: r.colours,
+        select: { kind: 'place', qid, label: r.name, owner: 'theirs' } as PlaceSelection,
+      }))
+    }
+
+    if (selectedQid) {
+      // A place only they have has no node, so no children — an empty list, not
+      // the children of whatever nodeAt happens to return for a missing qid.
+      const rows = (nodeAt(countries, selectedQid)?.children ?? []).map(toRow)
+      return mark(rows, (r, p) => p.qid === r.key)
+    }
     // Before the iso branch: a cityless selection is a leaf, not a country.
     if (unknownFilter || cityFilter || citylessFilter) return []
-    if (isoFilter) return (countries.find((c) => c.iso === isoFilter)?.children ?? []).map(toRow)
-    return countries.map((c) => ({
+    if (isoFilter) {
+      const rows = (countries.find((c) => c.iso === isoFilter)?.children ?? []).map(toRow)
+      const covered = new Set(rows.map((r) => r.key))
+      return [...mark(rows, (r, p) => p.qid === r.key), ...only(isoFilter, covered)]
+    }
+    const rows = countries.map((c) => ({
       key: c.iso ?? 'ZZ',
       label: c.name,
-      count: c.tracks,
+      count: c.tracks as number | null,
       drillable: c.children.length > 0,
       select: (c.name === 'Unknown'
         ? { kind: 'unknown', label: 'Unknown' }
         : { kind: 'country', iso: c.iso, label: c.name }) as PlaceSelection,
     }))
-  }, [countries, selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter])
+    const mine = new Set(countries.map((c) => c.iso))
+    // A country only they have. Named the way the server names yours, so the two
+    // halves of one list do not disagree about what a country is called.
+    const names = new Intl.DisplayNames(['en'], { type: 'region' })
+    const extra = [...new Set(theirs.map((p) => p.country_iso).filter((iso): iso is string => !!iso))]
+      .filter((iso) => !mine.has(iso))
+      .map((iso) => ({
+        key: `theirs-iso:${iso}`,
+        label: (() => {
+          try {
+            return names.of(iso) ?? iso
+          } catch {
+            return iso
+          }
+        })(),
+        count: null,
+        drillable: true,
+        theirs: dots((p) => p.country_iso === iso),
+        select: { kind: 'country', iso, label: iso } as PlaceSelection,
+      }))
+    return [
+      ...mark(rows, (r, p) => p.country_iso === (r.key === 'ZZ' ? null : r.key)),
+      ...extra,
+    ]
+  }, [countries, selectedQid, isoFilter, cityFilter, unknownFilter, citylessFilter, friendPlaces])
 
   /**
    * What the dock head says.
@@ -1022,7 +1426,9 @@ export function Home() {
       ? infoArtist?.name ?? 'Artist'
       : pushed.kind === 'collab'
         ? 'Collaboration'
-        : 'New playlist'
+        : pushed.kind === 'friend-playlist'
+          ? pushed.name
+          : 'New playlist'
     : tab === 'places'
       ? hasFilter
         ? filterLabel
@@ -1046,11 +1452,21 @@ export function Home() {
         onPlay={setManual}
         nowPlayingUri={nowPlaying?.uri ?? null}
       />
+    ) : pushed.kind === 'friend-playlist' ? (
+      <FriendPlaylistPanel
+        friendId={pushed.friendId}
+        sourceId={pushed.sourceId}
+        onPlayTrack={setManual}
+        nowPlayingUri={nowPlaying?.uri ?? null}
+      />
     ) : (
       <PlaylistBuilder
         placeQid={selectedQid ?? undefined}
         iso={isoFilter ?? undefined}
         placeName={filterLabel}
+        // So a library's tick box carries the same hue as its dots and its
+        // section in the place panel underneath.
+        colourOf={colourOf}
       />
     )
   ) : tab === 'search' ? (
@@ -1065,30 +1481,28 @@ export function Home() {
       onRemove={remove}
       onClear={clear}
       onSelectPlace={(qid, label, owner) => {
-        // A friend's city turns the globe to it and stops there. Selecting it
-        // would open the places tab, which reads your own library — their name
-        // over your artists, and "0 artists" for a city only they have. Flown to
-        // by *their* coordinates, since it may be a place your own library has
-        // never resolved.
-        if (owner === 'theirs') {
-          const p = friendMap.data?.points.find((x) => x.qid === qid)
-          if (p) {
-            setFlyTo({ kind: 'point', lat: p.lat, lon: p.lon, zoom: CITY_ZOOM, key: `friend:${qid}` })
-          }
-          return
-        }
-        onNavigate({ kind: 'place', qid, label })
+        // A friend's city used to turn the globe and stop there, because the
+        // places tab could only speak about your own library — their name over
+        // your artists, and "0 artists" for a city only they have. It can now
+        // show what *they* have from a place, so their city opens like any
+        // other. onNavigate falls back to their coordinates for the camera.
+        onNavigate({ kind: 'place', qid, label, owner })
       }}
       onOpenArtist={(id) => push({ kind: 'artist', id })}
-      friendId={friendId}
-      friendName={friendMap.data?.friend.display_name ?? null}
-      friendColour={friendColour}
+      onOpenFriendPlaylist={(friendId, sourceId, name) =>
+        push({ kind: 'friend-playlist', friendId, sourceId, name })
+      }
+      friendIds={friends?.map((f) => f.id) ?? []}
+      friendColourOf={colourOf}
+      friendNameOf={nameOf}
       scope={searchScope}
       onScope={setSearchScope}
     />
   ) : tab === 'compare' ? (
     <ComparePanel
       selectedFriend={friendId}
+      overlayIds={overlayIds}
+      onToggleOverlay={toggleOverlay}
       onSelectFriend={setFriendId}
       visible={friendVisible}
       onVisible={setFriendVisible}
@@ -1183,6 +1597,7 @@ export function Home() {
       nested={nested}
       onNavigate={onNavigate}
       onHoverRow={setMenuHover}
+      friendName={friendMap.data?.friend.display_name ?? null}
       subtitle={
         hasFilter ? (
           <>
@@ -1202,8 +1617,13 @@ export function Home() {
         <>
           {/* The rings are a property of the globe, and this is the tab you are
               on while looking at it — so the switch for them lives here too,
-              rather than only in the panel you had to visit to turn them on. */}
-          {friendMap.data?.friend && (
+              rather than only in the panel you had to visit to turn them on.
+
+              Only where there is something of theirs to show or hide, though: at
+              a place no imported library has, the control acts on nothing you
+              can see from here, and an eye offering to hide music that is not
+              there reads as music you have failed to load. */}
+          {friendMap.data?.friend && theirsHere && (
             <div className="overlay-mini">
               <OverlayEye
                 visible={friendVisible}
@@ -1235,20 +1655,59 @@ export function Home() {
       body={
         hasFilter ? (
           <>
-            <h2 style={{ marginTop: 14 }}>Artists</h2>
-            <ul className="artist-list">
-              {artists.data?.items.map((a) => (
-                <ArtistRow
-                  key={a.spotify_id}
-                  artist={a}
-                  onPlayArtist={playArtist}
-                  onPlayTrack={setManual}
-                  onInfo={(id) => push({ kind: 'artist', id })}
-                  showPlace={a.city !== selected?.name}
-                  nowPlayingUri={nowPlaying?.uri ?? null}
-                />
-              ))}
-            </ul>
+            {/* Suppressed rather than shown empty: a place only they have has no
+                artists of yours, and a heading over nothing reads as a failure
+                to load. */}
+            {(artists.data?.items.length ?? 0) > 0 && (
+              <>
+                <h2 style={{ marginTop: 14 }}>Artists</h2>
+                <ul className="artist-list">
+                  {artists.data?.items.map((a) => (
+                    <ArtistRow
+                      key={a.spotify_id}
+                      artist={a}
+                      onPlayArtist={playArtist}
+                      onPlayTrack={setManual}
+                      onInfo={(id) => push({ kind: 'artist', id })}
+                      showPlace={a.city !== selected?.name}
+                      nowPlayingUri={nowPlaying?.uri ?? null}
+                    />
+                  ))}
+                </ul>
+              </>
+            )}
+            {/* Underneath yours, and playable, one section per library. This is
+                the whole of what an imported library is for: not the overlap
+                percentage, but the four songs from here you have never heard.
+                Separate sections rather than one merged list, so every track
+                stays attributable to whoever brought it. */}
+            {friendSections.map((sec) => (
+              <div key={sec.id}>
+                <h2 style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="owner-dot" style={{ color: sec.colour }} aria-hidden="true" />
+                  {sec.name}
+                </h2>
+                <p className="panel-sub" style={{ margin: '0 0 6px' }}>
+                  {sec.missing
+                    ? `${sec.tracks} here · ${sec.missing} you don't have`
+                    : `${sec.tracks} here · you have them all`}
+                </p>
+                {/* The same list your own artists are in, so a place reads as one
+                    list with a heading between the libraries rather than two
+                    different designs stacked. */}
+                <ul className="artist-list">
+                  {sec.artists.map((a) => (
+                    <FriendArtistRow
+                      key={a.spotify_id}
+                      friendId={sec.id}
+                      artist={a}
+                      onPlayTrack={setManual}
+                      nowPlayingUri={nowPlaying?.uri ?? null}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))}
           </>
         ) : null
       }
@@ -1261,8 +1720,7 @@ export function Home() {
         <Globe
           points={map.data.points}
           litQids={litQids}
-          friendPoints={friendPoints}
-          friendColour={friendColour}
+          friends={friends}
           selectedQid={selectedQid}
           onSelect={select}
           onHover={onHover}

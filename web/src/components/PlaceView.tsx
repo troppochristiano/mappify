@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { CountryNode, PlaceNode } from '../lib/api'
+import type { CountryNode, Owner, PlaceNode } from '../lib/api'
 import { BackIcon } from './icons'
 
 export type Crumb = { label: string; select: PlaceSelection }
@@ -7,7 +7,13 @@ export type Crumb = { label: string; select: PlaceSelection }
 export type PlaceSelection =
   | { kind: 'root' }
   | { kind: 'country'; iso: string | null; label: string }
-  | { kind: 'place'; qid: string; label: string }
+  /**
+   * `owner: 'theirs'` means a place only an imported library has — your own
+   * tree has no node for it, so nothing downstream may look it up there. A city
+   * you both have is an ordinary selection: it is yours, with their tracks
+   * shown underneath.
+   */
+  | { kind: 'place'; qid: string; label: string; owner?: Owner }
   | { kind: 'city'; city: string; label: string }
   /** Known country, no town — "Somewhere in the United States". */
   | { kind: 'cityless'; iso: string | null; label: string }
@@ -75,15 +81,33 @@ export function PlaceView({
   nested,
   onNavigate,
   onHoverRow,
+  friendName,
   subtitle,
   actions,
   body,
 }: {
   crumbs: Crumb[]
-  nested: { key: string; label: string; count: number; select: PlaceSelection; drillable: boolean }[]
+  nested: {
+    key: string
+    label: string
+    /** Your track count. Null for a place only the imported library has. */
+    count: number | null
+    select: PlaceSelection
+    drillable: boolean
+    /**
+     * The colour of every imported library that has this place, in stack order.
+     *
+     * Colours rather than ids: the row only draws them, and handing it ids would
+     * make it ask somebody else what each one looks like. Empty or absent means
+     * nobody else has it.
+     */
+    theirs?: string[]
+  }[]
   onNavigate: (s: PlaceSelection) => void
   /** Hovering a row lights the same dots as hovering them on the globe. */
   onHoverRow?: (s: PlaceSelection | null) => void
+  /** Whose library, for the mark's tooltip — the dot itself carries no words. */
+  friendName?: string | null
   subtitle?: ReactNode
   actions?: ReactNode
   body?: ReactNode
@@ -138,8 +162,29 @@ export function PlaceView({
                   onFocus={() => onHoverRow?.(r.select)}
                   onBlur={() => onHoverRow?.(null)}
                 >
+                  {/* One dot per library that has this place, first so they read
+                      as marks on the row rather than punctuation in the name.
+                      Same colours, same order as the rings on the globe. */}
+                  {r.theirs?.map((colour, i) => (
+                    <span
+                      key={colour + i}
+                      className="owner-dot"
+                      style={{ color: colour }}
+                      title={
+                        r.theirs!.length > 1
+                          ? `${r.theirs!.length} imported libraries have this place`
+                          : friendName
+                            ? `${friendName} has this place too`
+                            : 'In an imported library too'
+                      }
+                      aria-hidden="true"
+                    />
+                  ))}
                   <span className="menu-name">{r.label}</span>
-                  <span className="menu-count">{r.count}</span>
+                  {/* An em dash, not a nought: a place only they have is not a
+                      place where you have zero tracks, it is one you have never
+                      had a row for at all. */}
+                  <span className="menu-count">{r.count === null ? '—' : r.count}</span>
                   {r.drillable && <span className="menu-more" aria-hidden="true">›</span>}
                 </button>
               </li>

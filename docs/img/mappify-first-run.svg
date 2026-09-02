@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470" role="img" aria-label="Mappify's first-run screen: three numbered steps, a copy button for the redirect URI, and a box to paste the Client ID.">
+  <rect width="880" height="470" rx="14" fill="#0a0a0a"/>
+  <rect x="30" y="26" width="820" height="418" rx="12" fill="#121212" stroke="#2a2a2a"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle">
+    <text x="440" y="82" font-size="26" font-weight="700" fill="#ffffff">Mappify</text>
+    <text x="440" y="114" font-size="13.5" fill="#b3b3b3">One thing first. Spotify needs to know this copy exists, which</text>
+    <text x="440" y="134" font-size="13.5" fill="#b3b3b3">takes about two minutes and is free.</text>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#b3b3b3">
+    <text x="248" y="176">1. Open developer.spotify.com/dashboard and click Create app.</text>
+    <text x="248" y="212">2. Paste this as the Redirect URI, exactly:</text>
+    <rect x="266" y="224" width="352" height="34" rx="6" fill="#181818" stroke="#3a3a3a"/>
+    <text x="282" y="246" font-size="12.5" fill="#ffffff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">http://127.0.0.1:6942/api/auth/callback</text>
+    <rect x="630" y="224" width="62" height="34" rx="6" fill="#282828"/>
+    <text x="661" y="246" font-size="12.5" fill="#ffffff" text-anchor="middle">copy</text>
+    <text x="248" y="294">3. Tick Web API, save, then copy the Client ID it gives you.</text>
+  </g>
+
+  <rect x="248" y="316" width="384" height="42" rx="8" fill="#181818" stroke="#3a3a3a"/>
+  <text x="268" y="343" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" fill="#7a7a7a">paste your Client ID</text>
+  <rect x="248" y="372" width="384" height="42" rx="21" fill="#1db954"/>
+  <text x="440" y="399" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#000000">Continue</text>
+
+  <path d="M762 241 H 704" stroke="#ff8a3d" stroke-width="3" fill="none"/>
+  <path d="M704 241 l12 -6 v12 z" fill="#ff8a3d"/>
+  <text x="774" y="236" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#ff8a3d">copy,</text>
+  <text x="774" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#ff8a3d">never type</text>
+
+  <path d="M700 340 H 646" stroke="#ff8a3d" stroke-width="3" fill="none"/>
+  <path d="M646 340 l12 -6 v12 z" fill="#ff8a3d"/>
+  <text x="712" y="345" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#ff8a3d">paste here</text>
+</svg>

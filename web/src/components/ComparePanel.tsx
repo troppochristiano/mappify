@@ -27,14 +27,20 @@ import { FRIEND_COLOURS } from './globe/layers'
 export function ComparePanel({
   selectedFriend,
   onSelectFriend,
+  overlayIds,
+  onToggleOverlay,
   visible,
   onVisible,
   colourOf,
   onColour,
 }: {
-  /** Lifted so the globe can overlay this friend's places. */
+  /** The library the comparison is about — pairwise, so exactly one. */
   selectedFriend: number | null
   onSelectFriend: (id: number | null) => void
+  /** Every library drawn on the globe, in the order they stack. */
+  overlayIds: number[]
+  onToggleOverlay: (id: number) => void
+  /** The master switch: whether any overlay is drawn at all. */
   visible: boolean
   onVisible: (v: boolean) => void
   /** Each library's own hue — see the colours map in the route. */
@@ -151,6 +157,16 @@ export function ComparePanel({
             Send someone your library as a file, or open one they sent you. Nothing
             leaves this machine except the file you choose to share.
           </p>
+          {/* What is in the file, at the moment of sending it — which is the
+              only moment the answer can change anything. Playlist names say more
+              about a person than counts do, and they started travelling in a
+              version somebody's copy may not have yet. */}
+          <p className="fine">
+            The file carries your artists, your tracks, the places they are from,
+            and the names and covers of your playlists — Liked Songs and the ones
+            you made, not your saved albums. Whoever opens it needs this version
+            of Mappify or newer.
+          </p>
 
           <div className="share-actions">
             {/* Two ways to hand over the same bytes, because the two builds hand
@@ -208,7 +224,7 @@ export function ComparePanel({
               act on, and a control that cannot do anything is furniture. */}
           <div className="list-head">
             <h2>Imported libraries</h2>
-            {selectedFriend != null && (
+            {overlayIds.length > 0 && (
               <button
                 className="ghost pill-sm"
                 aria-pressed={visible}
@@ -226,23 +242,23 @@ export function ComparePanel({
                   key={f.id}
                   friend={f}
                   // Drawn, and actually showing, are two different things: a
-                  // library can be the selected one with its rings turned off.
-                  overlaid={f.id === selectedFriend}
-                  visible={f.id === selectedFriend && visible}
+                  // library can be on the globe with the master switch off.
+                  overlaid={overlayIds.includes(f.id)}
+                  visible={overlayIds.includes(f.id) && visible}
                   colour={colourOf(f.id)}
                   onOpen={() => {
                     setOpenId(f.id)
                     onSelectFriend(f.id)
                     setStep(0)
                   }}
-                  // One click does both jobs, because there is one overlay slot:
-                  // the library already in it toggles, and any other takes it.
+                  // A plain per-library toggle now. There is no single overlay
+                  // slot to take, so adding one no longer evicts another —
+                  // several draw at once, each in its own colour. Turning one on
+                  // also lifts the master switch, or the first library you add
+                  // would appear to do nothing.
                   onEye={() => {
-                    if (f.id === selectedFriend) onVisible(!visible)
-                    else {
-                      onSelectFriend(f.id)
-                      onVisible(true)
-                    }
+                    onToggleOverlay(f.id)
+                    if (!overlayIds.includes(f.id)) onVisible(true)
                   }}
                   onRemove={() => remove.mutate(f.id)}
                 />
@@ -325,6 +341,10 @@ function FriendRow({
           <b>{friend.display_name}</b>
           <em>
             {friend.tracks.toLocaleString()} tracks · {friend.places} places
+            {/* Only when there are some. A library shared before playlists
+                travelled has none and did not fail to — saying "0 playlists"
+                would read as the file having been read badly. */}
+            {friend.playlists ? ` · ${friend.playlists} playlists` : ''}
           </em>
         </span>
       </button>
@@ -430,7 +450,7 @@ function OverlayControls({
   )
 }
 
-const STEPS = ['Match', 'For them', 'Shared', 'Cities'] as const
+const STEPS = ['Match', 'For you', 'Shared', 'Cities'] as const
 
 function Sequence({
   report,
@@ -576,6 +596,11 @@ function MatchStep({ report, friend }: { report: CompareReport; friend: Friend }
  * Everything else here could be computed by any of the sites that compare two
  * Spotify accounts. This one needs to know where artists are from, which is the
  * only thing Mappify has that they do not.
+ *
+ * It reads inward: their artists, in the cities you are deepest in. It used to
+ * read outward — your artists, for cities they were deep in, under a step called
+ * "For them" — which is a fine thing to know and the wrong thing to open
+ * somebody else's library to find out.
  */
 function DiscoveriesStep({ report, friend }: { report: CompareReport; friend: Friend }) {
   const name = friend.display_name
@@ -583,9 +608,9 @@ function DiscoveriesStep({ report, friend }: { report: CompareReport; friend: Fr
     return (
       <div className="compare-step">
         <p className="panel-sub">
-          Nothing to offer from the cities {name} is deepest in — you either share
-          those artists already, or your libraries are from different places
-          entirely. Try <b>Cities</b>.
+          Nothing new from the cities you are deepest in — you either have those
+          artists already, or your libraries are from different places entirely.
+          Try <b>Cities</b>.
         </p>
       </div>
     )
@@ -593,7 +618,7 @@ function DiscoveriesStep({ report, friend }: { report: CompareReport; friend: Fr
   return (
     <div className="compare-step">
       <p className="panel-sub">
-        Artists you have that {name} has none of, from the cities they already
+        Artists {name} has that you have none of, from the cities you already
         know best.
       </p>
       {report.discoveries.slice(0, 6).map((d) => (
@@ -601,7 +626,7 @@ function DiscoveriesStep({ report, friend }: { report: CompareReport; friend: Fr
           <h3>
             {d.name}
             <em>
-              {d.artists.length} to offer · they have {d.theirTracks} tracks from here
+              {d.artists.length} to hear · you have {d.yourTracks} tracks from here
             </em>
           </h3>
           <ul className="artist-list">

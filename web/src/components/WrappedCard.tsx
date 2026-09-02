@@ -96,12 +96,12 @@ export function WrappedCard({
             so it gets its own block rather than a line in a list. */}
         {discovery && (
           <section className="wrapped-block wrapped-discovery">
-            <h3>You could show them</h3>
+            <h3>You could hear</h3>
             <p>
               <b>{discovery.artists.length}</b> artist
               {discovery.artists.length === 1 ? '' : 's'} from <b>{discovery.name}</b>
-              {' '}they have never heard — a city they already have{' '}
-              {discovery.theirTracks} tracks from.
+              {' '}you have never heard — a city you already have{' '}
+              {discovery.yourTracks} tracks from.
             </p>
             <p className="wrapped-names">
               {discovery.artists.slice(0, 4).map((a) => a.name).join(' · ')}

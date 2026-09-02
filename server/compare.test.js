@@ -194,39 +194,48 @@ test('confidence drops when either side is too small to say anything', () => {
   assert.equal(compareLibraries(big, big).confidence, 'ok');
 });
 
-test('discoveries are artists they lack, from cities they are deep in', () => {
+test('discoveries are artists you lack, from cities you are deep in', () => {
   const mine = lib(
+    [artist('shared', 8, 'Q25287', 'Both Of Us')],
+    [place('Q25287', 60, 'SE', 'Gothenburg'), place('Q1490', 1, 'JP')]
+  );
+  const theirs = lib(
     [
-      artist('unknown-to-them', 12, 'Q25287', 'Hoola Bandoola'), // Gothenburg
+      artist('unknown-to-me', 12, 'Q25287', 'Hoola Bandoola'), // Gothenburg
       artist('also-new', 4, 'Q25287', 'Second Gothenburger'),
-      artist('shared', 8, 'Q25287', 'Both Of Us'),
-      artist('nowhere-near', 30, 'Q1490', 'Tokyo Act'), // a city they do not have
+      artist('shared', 30, 'Q25287', 'Both Of Us'),
+      // A city of theirs I have one track from, which is not a city I am deep in
+      // — the DEPTH cut is by my count, so this stays out on its own merits once
+      // there are 25 better ones. Here it is kept honest by the artist rule
+      // below instead: I have none of them either, so what proves the cut is the
+      // Gothenburg-only result, not this row.
+      artist('elsewhere', 30, 'Q1490', 'Tokyo Act'),
       artist('unplaced', 50, null, 'No Origin'),
     ],
     [place('Q25287', 24, 'SE'), place('Q1490', 30, 'JP')]
   );
-  const theirs = lib(
-    [artist('shared', 60, 'Q25287', 'Both Of Us')],
-    [place('Q25287', 60, 'SE', 'Gothenburg')]
-  );
 
   const { discoveries } = compareLibraries(mine, theirs);
-  assert.equal(discoveries.length, 1, 'only the city they actually have should appear');
 
-  const [gbg] = discoveries;
-  assert.equal(gbg.qid, 'Q25287');
-  assert.equal(gbg.name, 'Gothenburg');
-  assert.equal(gbg.theirTracks, 60);
+  const gbg = discoveries.find((d) => d.qid === 'Q25287');
+  assert.ok(gbg, 'the city I am deepest in should be there');
+  assert.equal(gbg.name, 'Gothenburg', 'named the way my own database names it');
+  assert.equal(gbg.yourTracks, 60, 'how deep I am, not how deep they are');
   assert.deepEqual(
     gbg.artists.map((a) => a.id),
-    ['unknown-to-them', 'also-new'],
-    'an artist they already have is not a discovery, and order is densest first'
+    ['unknown-to-me', 'also-new'],
+    'an artist I already have is not a discovery, and order is densest first'
+  );
+  assert.deepEqual(
+    gbg.artists.map((a) => a.tracks),
+    [12, 4],
+    'the counts are theirs — how much of that artist is waiting'
   );
 });
 
-test('discoveries are empty when the friend has no places at all', () => {
-  const mine = lib([artist('a', 5, 'Q60')], [place('Q60', 5)]);
-  assert.deepEqual(compareLibraries(mine, lib([], [])).discoveries, []);
+test('discoveries are empty when you have no places at all', () => {
+  const theirs = lib([artist('a', 5, 'Q60')], [place('Q60', 5)]);
+  assert.deepEqual(compareLibraries(lib([], []), theirs).discoveries, []);
 });
 
 test('a place we both have is named the way my database names it', () => {

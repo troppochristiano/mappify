@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" width="880" height="460" role="img" aria-label="System Settings, Privacy and Security, scrolled to Security, where a line about Mappify has an Open Anyway button.">
+  <rect width="880" height="460" rx="14" fill="#eef1f5"/>
+
+  <rect x="30" y="26" width="820" height="408" rx="14" fill="#ffffff" stroke="#d7dbe0"/>
+  <!-- sidebar -->
+  <path d="M30 40a14 14 0 0 1 14-14h206v408H44a14 14 0 0 1-14-14z" fill="#f3f4f6"/>
+  <circle cx="52" cy="46" r="6" fill="#ff5f57"/><circle cx="72" cy="46" r="6" fill="#febc2e"/><circle cx="92" cy="46" r="6" fill="#28c840"/>
+  <text x="52" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#1d1d1f">System Settings</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#6e6e73">
+    <text x="60" y="132">General</text>
+    <text x="60" y="164">Appearance</text>
+    <text x="60" y="196">Control Centre</text>
+    <text x="60" y="228">Desktop &amp; Dock</text>
+  </g>
+  <rect x="44" y="244" width="192" height="30" rx="8" fill="#0071e3"/>
+  <text x="60" y="264" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#ffffff">Privacy &amp; Security</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#6e6e73">
+    <text x="60" y="304">Login Password</text>
+    <text x="60" y="336">Users &amp; Groups</text>
+  </g>
+
+  <!-- content -->
+  <text x="284" y="76" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#1d1d1f">Privacy &amp; Security</text>
+  <text x="284" y="122" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#6e6e73" letter-spacing="0.6">SECURITY</text>
+
+  <rect x="284" y="136" width="540" height="150" rx="12" fill="#f6f7f9" stroke="#e3e6ea"/>
+  <text x="304" y="168" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d1d1f">Allow applications from</text>
+  <rect x="640" y="152" width="164" height="26" rx="7" fill="#ffffff" stroke="#d2d5da"/>
+  <text x="656" y="170" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#1d1d1f">App Store &amp; Known…</text>
+  <path d="M284 196 H 824" stroke="#e3e6ea" stroke-width="1"/>
+
+  <text x="304" y="226" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" fill="#1d1d1f">“Mappify” was blocked to protect your Mac.</text>
+  <text x="304" y="250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6e73">This line appears for about an hour after you tried to open it.</text>
+  <rect x="686" y="212" width="118" height="30" rx="8" fill="#ffffff" stroke="#0071e3"/>
+  <text x="745" y="232" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0071e3">Open Anyway</text>
+
+  <circle cx="745" cy="290" r="0" fill="none"/>
+  <path d="M745 340 V 252" stroke="#e8590c" stroke-width="3" fill="none"/>
+  <path d="M745 252 l-6 12 h12 z" fill="#e8590c"/>
+  <text x="745" y="366" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#e8590c">this button, once</text>
+  <text x="745" y="388" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#6e6e73">then Touch ID or your password</text>
+</svg>

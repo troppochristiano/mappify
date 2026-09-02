@@ -97,7 +97,7 @@ export function ArtistDetail({
                   })
                 }
               >
-                <span className="track-mark" aria-hidden="true">{playing ? '▮' : '▶'}</span>
+                <span className="track-mark" aria-hidden="true">{playing ? '■' : '▶'}</span>
                 <span className="track-name">{t.name}</span>
                 {t.position > 0 ? <span className="badge">feat</span> : null}
                 <span className="track-album">{t.album}</span>

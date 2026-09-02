@@ -26,8 +26,10 @@ const doc = (over = {}) => ({
   places: [['Q60', 'New York City', 'US', 40.7, -74, 10, 2]],
   artist_columns: ['spotify_id', 'name', 'tracks', 'place_qid', 'image_url'],
   artists: [[ID, 'An Artist', 5, 'Q60', null]],
-  track_columns: ['spotify_id', 'name', 'artist_id'],
-  tracks: [[ID2, 'A Track', ID]],
+  track_columns: ['spotify_id', 'name', 'artist_id', 'sources'],
+  tracks: [[ID2, 'A Track', ID, [7]]],
+  source_columns: ['id', 'kind', 'name', 'image_url'],
+  sources: [[7, 'playlist', 'A Playlist', null]],
   ...over,
 });
 
@@ -68,8 +70,28 @@ test('a gzip bomb is refused rather than inflated', () => {
 test('the magic and the format number are checked before anything else is read', () => {
   refuses(file({ magic: 'something.else' }), 'wrong magic');
   refuses(file({ magic: undefined }), 'no magic');
-  refuses(file({ format: 2 }), 'a newer format');
+  refuses(file({ format: FORMAT + 1 }), 'a newer format');
   refuses(file({ format: '1' }), 'a format that is a string');
+  refuses(file({ format: 0 }), 'a format below the first one');
+});
+
+test('a file from before playlists travelled still imports, and says so', () => {
+  // The whole of back-compat: a format 1 file has no source columns at all, and
+  // must land as a library with no playlists rather than as an error. What tells
+  // the two apart afterwards is the format number, which is why it is kept.
+  const r = decodeExport(
+    file({
+      format: 1,
+      track_columns: ['spotify_id', 'name', 'artist_id'],
+      tracks: [[ID2, 'A Track', ID]],
+      source_columns: undefined,
+      sources: undefined,
+    })
+  );
+  assert.equal(r.format, 1);
+  assert.deepEqual(r.sources, []);
+  assert.deepEqual(r.tracks[0].sources, []);
+  assert.equal(r.dropped, 0);
 });
 
 test('a file that does not say who it belongs to is refused', () => {
@@ -203,6 +225,92 @@ test('an artist image pointing anywhere but Spotify is stripped', () => {
     file({ artists: [[ID, 'Sneaky', 1, null, 'https://i.scdn.co.evil.example/image/x']] })
   );
   assert.equal(sneaky.artists[0].image_url, null);
+});
+
+test('a playlist cover may come from any of the hosts Spotify actually serves', () => {
+  // Measured, not assumed: of 61 playlists in a real library, three covers were
+  // on i.scdn.co. The rest were mosaics and hand-uploaded covers on two other
+  // Spotify hosts, so the artist rule applied here would have stripped almost
+  // every cover somebody chose.
+  const mosaic = `https://mosaic.scdn.co/640/${'a'.repeat(160)}`;
+  const uploaded = `https://image-cdn-ak.spotifycdn.com/image/${'b'.repeat(40)}`;
+  const r = decodeExport(
+    file({
+      sources: [
+        [1, 'liked', 'Liked Songs', null],
+        [2, 'playlist', 'Mosaic', mosaic],
+        [3, 'playlist', 'Uploaded', uploaded],
+        [4, 'playlist', 'Tracked', 'https://evil.example/beacon.png'],
+        [5, 'playlist', 'Sneaky', 'https://i.scdn.co.evil.example/image/abcdefghijklmnop'],
+      ],
+      tracks: [[ID2, 'A Track', ID, [1, 2, 3, 4, 5]]],
+    })
+  );
+  const by = (name) => r.sources.find((s) => s.name === name);
+  assert.equal(by('Mosaic').image_url, mosaic);
+  assert.equal(by('Uploaded').image_url, uploaded);
+  // Dropped to null rather than costing the playlist: a cover is not a playlist.
+  assert.equal(by('Tracked').image_url, null);
+  assert.ok(by('Tracked'), 'the row itself survives');
+  assert.equal(by('Sneaky').image_url, null);
+});
+
+test('a source that is not a playlist or Liked Songs is dropped', () => {
+  // `kind` is rendered as a category, and a category out of somebody's file is
+  // copy they wrote. Albums do not travel at all; anything else is a mistake or
+  // an attempt.
+  const r = decodeExport(
+    file({
+      sources: [
+        [1, 'playlist', 'Real', null],
+        [2, 'album', 'An Album', null],
+        [3, '"><script>', 'Nasty', null],
+        [4, null, 'Kindless', null],
+      ],
+    })
+  );
+  assert.deepEqual(r.sources.map((s) => s.name), ['Real']);
+  assert.equal(r.dropped, 3);
+});
+
+test('membership can only ever name a playlist the file actually sent', () => {
+  const r = decodeExport(
+    file({
+      sources: [[7, 'playlist', 'A Playlist', null]],
+      tracks: [[ID2, 'A Track', ID, [7, 8, -1, 'x', 7.5, null]]],
+    })
+  );
+  assert.deepEqual(r.tracks[0].sources, [7], 'unknown, negative, textual and fractional ids all go');
+});
+
+test('a dropped track row cannot shift another track into the wrong playlist', () => {
+  // The reason membership rides on the track row rather than travelling as a
+  // list of positions: a position is relative to a list that validation is about
+  // to take rows out of, and a shifted position points at a real, wrong track
+  // instead of at nothing. An id cannot be shifted.
+  const good = (i) => `T${String(i).padStart(21, '0')}`;
+  const tracks = Array.from({ length: 10 }, (_, i) => [good(i), `Track ${i}`, ID, [7]]);
+  tracks[3] = ['not-an-id', 'Malformed', ID, [7]];
+  const r = decodeExport(file({ tracks }));
+  assert.equal(r.tracks.length, 9);
+  assert.equal(r.dropped, 1);
+  assert.ok(
+    r.tracks.every((t) => t.sources.length === 1 && t.sources[0] === 7),
+    'every surviving track keeps its own membership'
+  );
+});
+
+test('a file claiming absurd numbers of playlists is refused before any row is read', () => {
+  const many = Array.from({ length: 2_001 }, (_, i) => [i, 'playlist', `P${i}`, null]);
+  refuses(file({ sources: many }), 'two thousand playlists');
+});
+
+test('one track cannot claim membership of every playlist in the world', () => {
+  const sources = Array.from({ length: 200 }, (_, i) => [i, 'playlist', `P${i}`, null]);
+  const r = decodeExport(
+    file({ sources, tracks: [[ID2, 'A Track', ID, sources.map((s) => s[0])]] })
+  );
+  assert.equal(r.tracks[0].sources.length, 64, 'capped, not refused — the track is still real');
 });
 
 test('an SVG avatar is rejected outright', () => {

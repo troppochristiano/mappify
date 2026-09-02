@@ -7,8 +7,13 @@
 // trust boundary in the way `filters.js` is one — it fails closed, drops rather
 // than escapes, and never assumes a field is the type it claims to be.
 //
-// Aggregates only. No playlists, no sources, no added_at, no tokens. What
-// travels is what a comparison needs and nothing else.
+// Aggregates, plus — since format 2 — the playlists somebody made and which of
+// their tracks are in them. Still no added_at, no listening history, no tokens,
+// no Spotify playlist ids: a file is a snapshot, and an id that still resolves
+// would make it a pointer at something live that can change or be deleted.
+//
+// Playlist names are the most personal thing that has ever travelled in one of
+// these, which is why the export screen names them before you send it.
 //
 // Note throughout: `tracks` always means "tracks in the library". Mappify stores
 // no listening history, so there is nothing here to call a play count, and a
@@ -25,7 +30,26 @@ const one = (sql, ...params) => currentDb().prepare(sql).get(...params);
 const run = (sql, ...params) => currentDb().prepare(sql).run(...params);
 
 export const MAGIC = 'mappify.share';
-export const FORMAT = 1;
+/**
+ * 2 adds the sources — playlists and Liked Songs — and which tracks are in them.
+ *
+ * A format 1 file still imports, and lands as a library with no playlists in it;
+ * `friends.format` is what the app reads afterwards to tell "shared before
+ * playlists travelled" apart from "has none". The other direction cannot be
+ * helped: a build that predates this refuses anything that is not exactly 1, so
+ * a file from here is unreadable there and says so in those words.
+ */
+export const FORMAT = 2;
+/**
+ * The first format whose files carry playlists.
+ *
+ * Compared against `friends.format` wherever the app has to tell a library that
+ * *could not* carry playlists apart from one that had none — never written as a
+ * literal 2, which would be the same number meaning two different things.
+ */
+export const PLAYLIST_FORMAT = 2;
+/** Formats this build will open. Anything above FORMAT is a newer Mappify. */
+const READABLE = new Set([1, 2]);
 
 /**
  * Columns, declared in the file rather than implied by position alone.
@@ -37,7 +61,25 @@ export const FORMAT = 1;
  */
 const PLACE_COLUMNS = ['qid', 'name', 'country_iso', 'lat', 'lon', 'tracks', 'artists'];
 const ARTIST_COLUMNS = ['spotify_id', 'name', 'tracks', 'place_qid', 'image_url'];
-const TRACK_COLUMNS = ['spotify_id', 'name', 'artist_id'];
+/**
+ * `sources` is the format 2 addition, and is a list of source ids, not a string.
+ *
+ * Membership rides on the track rather than travelling as its own table of
+ * (track, source) pairs, because that table repeats a 22-character track id once
+ * per playlist the track is in — on a library where most tracks are in two or
+ * three, it is larger than every other table in the file put together. A short
+ * array of small integers costs a few bytes on a row that already exists.
+ */
+const TRACK_COLUMNS = ['spotify_id', 'name', 'artist_id', 'sources'];
+/**
+ * A playlist, or Liked Songs — `sources.kind` says which.
+ *
+ * `id` is the exporter's own `sources.id` and means nothing outside the file. It
+ * is here only so the track rows above have something short to point at, and it
+ * is stored on the friend side under the same rule: a local number, never joined
+ * to anything of yours.
+ */
+const SOURCE_COLUMNS = ['id', 'kind', 'name', 'image_url'];
 
 /**
  * Ceilings, all of them well above any real library.
@@ -51,6 +93,15 @@ const LIMITS = {
   artists: 20_000,
   tracks: 200_000,
   places: 5_000,
+  /** Spotify's own ceiling on playlists per account is far below this. */
+  sources: 2_000,
+  /**
+   * Memberships one track may claim. A track really can be in dozens of your own
+   * playlists; it cannot be in two thousand, and without a cap here a file of
+   * 200,000 tracks could claim every source on every one of them and turn one
+   * import into 400 million inserts.
+   */
+  sourcesPerTrack: 64,
   /** Decompressed size. Without this a 1MB file can inflate to gigabytes. */
   inflated: 64 * 1024 * 1024,
   avatarBytes: 256 * 1024,
@@ -86,6 +137,28 @@ const ISO = /^[A-Z]{2}$/;
  * and removes the whole category.
  */
 const SPOTIFY_CDN = /^https:\/\/i\.scdn\.co\/image\/[A-Za-z0-9]{1,200}$/;
+
+/**
+ * Where a playlist cover may point — wider, and measured rather than assumed.
+ *
+ * Of 61 playlists in a real library, three covers were on `i.scdn.co`. The rest
+ * were on `mosaic.scdn.co` (25 — the four-album grid Spotify generates for a
+ * playlist with no uploaded cover, which is to say for most playlists people
+ * actually make) and `image-cdn-ak`/`image-cdn-fa.spotifycdn.com` (22 — a cover
+ * somebody uploaded by hand). Reusing the artist rule above would have stripped
+ * the cover off 47 of the 50 playlists that had one.
+ *
+ * Deliberately a second constant rather than a widening of the first: artist
+ * portraits really are `i.scdn.co` only, and a boundary widened past what it
+ * needs stops being a boundary. Same argument for both — Spotify's own hosts,
+ * fetched by the browser exactly as an artist image already is — and a cover
+ * matching neither is dropped to null rather than costing the row it is on.
+ *
+ * The mosaic path is four concatenated ids, hence the wide bound. Still bounded:
+ * the pattern is applied to the raw string, never to a clipped one.
+ */
+const SPOTIFY_COVER =
+  /^https:\/\/(?:i\.scdn\.co\/image|mosaic\.scdn\.co\/\d{2,4}|image-cdn-[a-z]{2}\.spotifycdn\.com\/image)\/[A-Za-z0-9]{16,400}$/;
 
 // ---------------------------------------------------------------- export
 
@@ -135,7 +208,34 @@ export function collectLibrary() {
     FROM tracks t
     JOIN track_artists ta ON ta.track_id = t.spotify_id AND ta.position = 0`);
 
-  return { places, artists, tracks };
+  // Playlists, and Liked Songs, which is a source like any other here.
+  //
+  // Two clauses, both load-bearing. `kind IN ('liked','playlist')` leaves out
+  // saved albums, which in a real library are 390 of the 452 rows in this table:
+  // an album is a catalogue object rather than anything somebody decided, its
+  // tracks are already in the file under their artists, and 390 of them would
+  // bury the 33 rows that mean something.
+  //
+  // The join is the second: a playlist you follow but do not own imported with a
+  // name and a cover and no tracks, because Spotify will not return its contents
+  // to anybody but its owner, and a name with nothing behind it is a row you
+  // would open to find nothing. `/api/search` refuses to offer those for the
+  // same reason, which is where this predicate comes from.
+  const sources = all(`
+    SELECT s.id, s.kind, s.name, s.image_url, count(*) tracks
+    FROM sources s
+    JOIN track_sources ts ON ts.source_id = s.id
+    WHERE s.kind IN ('liked', 'playlist')
+    GROUP BY s.id
+    ORDER BY (s.kind = 'liked') DESC, tracks DESC`);
+
+  const membership = all(`
+    SELECT ts.track_id, ts.source_id
+    FROM track_sources ts
+    JOIN sources s ON s.id = ts.source_id
+    WHERE s.kind IN ('liked', 'playlist')`);
+
+  return { places, artists, tracks, sources, membership };
 }
 
 /** The comparison's view of this library. See compare.js for the row shapes. */
@@ -163,10 +263,20 @@ const pick = (row, columns) => columns.map((c) => row[c] ?? null);
  * without a face still works, and the card falls back to initials.
  */
 export function buildExport({ spotifyId, displayName, avatar = null, appVersion = null }) {
-  const { places, artists, tracks } = collectLibrary();
+  const { places, artists, tracks, sources, membership } = collectLibrary();
 
   const placed = new Set(artists.filter((a) => a.place_qid).map((a) => a.spotify_id));
   const placedTracks = tracks.filter((t) => placed.has(t.artist_id)).length;
+
+  // Attached here rather than selected with the tracks: a track is in as many
+  // sources as it is in, and a join would return the same track several times
+  // for a table whose whole shape says one row each.
+  const inSources = new Map();
+  for (const m of membership) {
+    const list = inSources.get(m.track_id);
+    if (list) list.push(m.source_id);
+    else inSources.set(m.track_id, [m.source_id]);
+  }
 
   return {
     magic: MAGIC,
@@ -187,6 +297,7 @@ export function buildExport({ spotifyId, displayName, avatar = null, appVersion 
       countries: new Set(places.map((p) => p.country_iso).filter(Boolean)).size,
       placed_tracks: placedTracks,
       unplaced_tracks: tracks.length - placedTracks,
+      sources: sources.length,
     },
 
     place_columns: PLACE_COLUMNS,
@@ -194,7 +305,9 @@ export function buildExport({ spotifyId, displayName, avatar = null, appVersion 
     artist_columns: ARTIST_COLUMNS,
     artists: artists.map((a) => pick(a, ARTIST_COLUMNS)),
     track_columns: TRACK_COLUMNS,
-    tracks: tracks.map((t) => pick(t, TRACK_COLUMNS)),
+    tracks: tracks.map((t) => pick({ ...t, sources: inSources.get(t.spotify_id) ?? [] }, TRACK_COLUMNS)),
+    source_columns: SOURCE_COLUMNS,
+    sources: sources.map((s) => pick(s, SOURCE_COLUMNS)),
   };
 }
 
@@ -306,8 +419,9 @@ export function decodeExport(buffer) {
   }
 
   if (doc?.magic !== MAGIC) throw new BadShareFile('That is not a Mappify file.');
-  if (doc.format !== FORMAT) {
-    throw new BadShareFile('That file was made by a different version of Mappify.');
+  if (!READABLE.has(doc.format)) {
+    // Only ever a file from ahead of us now: everything behind is in READABLE.
+    throw new BadShareFile('That file was made by a newer version of Mappify. Update, then open it again.');
   }
 
   // Size is checked before anything iterates, so a hostile file costs a length
@@ -316,6 +430,7 @@ export function decodeExport(buffer) {
     [doc.artists, LIMITS.artists, 'artists'],
     [doc.tracks, LIMITS.tracks, 'tracks'],
     [doc.places, LIMITS.places, 'places'],
+    [doc.sources, LIMITS.sources, 'playlists'],
   ].find(([rows, cap]) => Array.isArray(rows) && rows.length > cap);
   if (tooMany) throw new BadShareFile(`That file claims far too many ${tooMany[2]} to be real.`);
 
@@ -385,6 +500,33 @@ export function decodeExport(buffer) {
     'artists'
   );
 
+  // Format 1 has no sources at all, and says so by having no rows — not by being
+  // an error. Everything below then produces empty lists and the library imports
+  // exactly as it did before.
+  const rawSources = rowsToObjects(doc.source_columns, doc.sources, SOURCE_COLUMNS);
+  // No `refuseIfGutted` here, unlike every table above it. The aggregates *are*
+  // the library; a playlist is an annotation on it, and refusing somebody's
+  // whole library because a playlist name came through malformed would be the
+  // tail wagging the dog. Bad rows are dropped and counted into `dropped`, which
+  // the import already reports.
+  const sources = keep(rawSources, (s) => {
+    const id = count(s.id);
+    // Allowlisted rather than taken as read: a kind out of a file is rendered as
+    // a category, and a category is copy. `album` is not among them because
+    // albums do not travel — see collectLibrary.
+    const kind = s.kind === 'liked' || s.kind === 'playlist' ? s.kind : null;
+    if (id == null || !kind) return null;
+    return {
+      id,
+      kind,
+      // A playlist with an empty name is a real thing people make, and the id is
+      // the identity here as everywhere else, so the row survives with a label.
+      name: text(s.name) ?? (kind === 'liked' ? 'Liked Songs' : `Playlist ${id}`),
+      image_url: matching(s.image_url, SPOTIFY_COVER),
+    };
+  });
+  const sourceIds = new Set(sources.map((s) => s.id));
+
   const rawTracks = rowsToObjects(doc.track_columns, doc.tracks, TRACK_COLUMNS);
   const tracks = refuseIfGutted(
     keep(rawTracks, (t) => {
@@ -394,6 +536,15 @@ export function decodeExport(buffer) {
         spotify_id: id,
         name: text(t.name) ?? '',
         artist_id: matching(t.artist_id, SPOTIFY_ID),
+        // Filtered against the sources that actually arrived, so a file naming a
+        // playlist it did not send loses that edge and nothing else. Bounded per
+        // track as well as per file: see LIMITS.sourcesPerTrack.
+        sources: Array.isArray(t.sources)
+          ? [...new Set(t.sources.map(count).filter((n) => n != null && sourceIds.has(n)))].slice(
+              0,
+              LIMITS.sourcesPerTrack
+            )
+          : [],
       };
     }),
     rawTracks.length,
@@ -411,6 +562,7 @@ export function decodeExport(buffer) {
     places,
     artists,
     tracks,
+    sources,
     dropped,
   };
 }
@@ -528,7 +680,13 @@ export function saveFriend(decoded) {
     } else {
       // Replace rather than merge: a re-import is a newer snapshot of the same
       // person, and half of an old library left behind would be invisible.
-      for (const t of ['friend_places', 'friend_artists', 'friend_tracks']) {
+      for (const t of [
+        'friend_places',
+        'friend_artists',
+        'friend_tracks',
+        'friend_sources',
+        'friend_track_sources',
+      ]) {
         run(`DELETE FROM ${t} WHERE friend_id = ?`, existing.id);
       }
       run('DELETE FROM friends WHERE id = ?', existing.id);
@@ -576,6 +734,40 @@ export function saveFriend(decoded) {
     );
     for (const t of decoded.tracks) insTrack.run(id, t.spotify_id, t.name, t.artist_id);
 
+    // Membership comes off the track rows, so it can only ever name tracks that
+    // survived validation — there is no second list to fall out of step with the
+    // first. Counted while inserting, because a source's size is a fact about
+    // what arrived and not a number the file gets to assert; see the note on
+    // `counts` above.
+    const held = new Map((decoded.sources ?? []).map((s) => [s.id, 0]));
+    const insMember = db.prepare(
+      `INSERT OR IGNORE INTO friend_track_sources (friend_id, source_id, track_id) VALUES (?,?,?)`
+    );
+    for (const t of decoded.tracks) {
+      for (const sid of t.sources ?? []) {
+        if (!held.has(sid)) continue;
+        insMember.run(id, sid, t.spotify_id);
+        held.set(sid, held.get(sid) + 1);
+      }
+    }
+
+    const insSource = db.prepare(
+      `INSERT OR IGNORE INTO friend_sources
+         (friend_id, source_id, kind, name, image_url, tracks) VALUES (?,?,?,?,?,?)`
+    );
+    // A playlist every one of whose tracks was dropped is not a playlist worth
+    // listing: it would open onto nothing, which is the same rule that kept
+    // their un-owned playlists out of the file in the first place.
+    let playlists = 0;
+    for (const s of decoded.sources ?? []) {
+      if (!held.get(s.id)) continue;
+      insSource.run(id, s.id, s.kind, s.name, s.image_url, held.get(s.id));
+      playlists++;
+    }
+    // Written after the loop rather than guessed before it, for the same reason
+    // every other count here is derived: this is how many arrived.
+    run('UPDATE friends SET playlists = ? WHERE id = ?', playlists, id);
+
     db.exec('COMMIT');
     return getFriend(id);
   } catch (err) {
@@ -588,7 +780,7 @@ export function saveFriend(decoded) {
 export function listFriends() {
   return all(`
     SELECT id, spotify_id, display_name, format, exported_at, imported_at,
-           tracks, artists, places, unplaced_tracks, skipped_rows,
+           tracks, artists, places, playlists, unplaced_tracks, skipped_rows,
            avatar_blob IS NOT NULL AS has_avatar
     FROM friends
     ORDER BY imported_at DESC`);
@@ -597,7 +789,7 @@ export function listFriends() {
 export function getFriend(id) {
   return one(
     `SELECT id, spotify_id, display_name, format, exported_at, imported_at,
-            tracks, artists, places, unplaced_tracks, skipped_rows,
+            tracks, artists, places, playlists, unplaced_tracks, skipped_rows,
             avatar_blob IS NOT NULL AS has_avatar
      FROM friends WHERE id = ?`,
     id
@@ -608,7 +800,7 @@ export function friendAvatar(id) {
   return one('SELECT avatar_mime mime, avatar_blob bytes FROM friends WHERE id = ?', id);
 }
 
-/** One statement, because ON DELETE CASCADE carries the three child tables. */
+/** One statement, because ON DELETE CASCADE carries every child table. */
 export function deleteFriend(id) {
   run('DELETE FROM friends WHERE id = ?', id);
 }

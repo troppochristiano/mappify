@@ -10,14 +10,13 @@ import {
 } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
-import type { MapPoint, PlaceLink } from '../lib/api'
-import { coastlines, dotsToGeoJSON, linksToGeoJSON } from './globe/geo'
+import type { MapPoint, Owner, PlaceLink } from '../lib/api'
+import { coastlines, dotsToGeoJSON, friendsToGeoJSON, linksToGeoJSON } from './globe/geo'
+import type { FriendLib } from './globe/geo'
 import {
   LAYER,
   SOURCE,
-  FRIEND_COLOUR,
   applyDotMode,
-  applyFriendColour,
   applyLinkQuiet,
   buildStyle,
   countryFilter,
@@ -48,15 +47,17 @@ type Props = {
   /** Dots matching the active search stay lit; the rest dim. Null = no filter. */
   litQids: Set<string> | null
   /**
-   * An imported library, drawn as rings beneath your own dots. Empty or absent
-   * means no overlay at all.
+   * The imported libraries being drawn, in the order they should stack.
+   *
+   * Several at once, each with its own colour, all from one source: circle paint
+   * is data-driven, so a library costs features rather than a layer — and one
+   * label layer is the only way names from two libraries can compete on track
+   * count rather than on which was added first.
    */
-  friendPoints?: MapPoint[]
-  /** The hue those rings take, so two friends are told apart by colour. */
-  friendColour?: string
+  friends?: FriendLib[]
   selectedQid: string | null
   /** Only ever a deliberate click — dragging the globe never selects. */
-  onSelect: (qid: string) => void
+  onSelect: (qid: string, owner: Owner) => void
   /**
    * A collaboration arc was clicked: the two places it joins.
    *
@@ -340,8 +341,7 @@ type Bound = { map: MapLibreMap; styled: boolean }
 export function Globe({
   points,
   litQids,
-  friendPoints,
-  friendColour,
+  friends,
   selectedQid,
   onSelect,
   onHover,
@@ -460,8 +460,11 @@ export function Globe({
    */
   const scaleMax = useMemo(() => {
     const top = (rows: MapPoint[]) => rows.reduce((m, p) => (p.tracks > m ? p.tracks : m), 1)
-    return Math.max(top(points), friendPoints?.length ? top(friendPoints) : 1)
-  }, [points, friendPoints])
+    // Across every library on screen, not just yours and one of theirs: with two
+    // overlays normalised separately, the smaller library's busiest city would
+    // draw the same size as the larger one's and the comparison would be a lie.
+    return Math.max(top(points), ...(friends ?? []).map((f) => top(f.points)))
+  }, [points, friends])
 
   const dotsData = useMemo(
     () => dotsToGeoJSON(points, litQids ?? null, highlight ?? null, scaleMax),
@@ -469,17 +472,17 @@ export function Globe({
   )
   const friendData = useMemo(
     () =>
-      friendPoints?.length
+      friends?.length
         ? // Never dimmed and never spotlit: the overlay is passive, so search
           // and menu hover act on your library alone rather than quietly
-          // rewriting what a friend's map says.
+          // rewriting what a friend's map says. Their *labels* are stood down
+          // during a search instead — see the filter below.
           //
-          // Your places go in as well, and only here: a ring at a city you both
-          // have has to know how big your dot is to stay outside it. See `mine`
-          // in DotProps.
-          dotsToGeoJSON(friendPoints, null, null, scaleMax, byQid)
+          // Your places go in as well: a ring has to know how big the dot it
+          // surrounds is, and at a shared city that dot is yours.
+          friendsToGeoJSON(byQid, friends, null, null, scaleMax)
         : EMPTY_FC,
-    [friendPoints, scaleMax, byQid]
+    [friends, scaleMax, byQid]
   )
   const linkEndsData = useMemo(
     () =>
@@ -525,15 +528,19 @@ export function Globe({
   }
 
   /**
-   * The overlay: data in, colour on, nothing else.
+   * The overlay: data in, hover back on.
    *
-   * No feature-state to restore, unlike `setDots` — the friend layer holds none
-   * by design, so replacing its features has nothing to put back afterwards.
+   * Colour is no longer painted here — it is a property of each feature, so it
+   * arrives with the data. State does have to be restored, unlike the version of
+   * this that held none: `setData` drops feature-state with the features it
+   * replaces, and the marks now carry hover like your own dots do.
    */
   const setFriendDots = (map: MapLibreMap) => {
     const src = map.getSource(SOURCE.friendDots) as GeoJSONSource | undefined
     src?.setData(friendRef.current as unknown as GeoJSON.FeatureCollection)
-    applyFriendColour(map, friendColourRef.current)
+    for (const fid of friendHovered.current) {
+      map.setFeatureState({ source: SOURCE.friendDots, id: fid }, { hover: true })
+    }
   }
 
   /**
@@ -654,18 +661,50 @@ export function Globe({
 
   const dotsRef = useRef(dotsData)
   const linkEndsRef = useRef(linkEndsData)
+  /**
+   * The friend marks currently lit, by feature id.
+   *
+   * A set rather than one id, because one place can be several marks: hovering a
+   * city you share with three libraries should light all three of their rings,
+   * not an arbitrary one of them.
+   */
+  const friendHovered = useRef<string[]>([])
+  /** Every friend feature id at a qid, so hovering a place can light them all. */
+  const friendFidsRef = useRef<Map<string, string[]>>(new Map())
+  /**
+   * Their places by qid, for the label machinery.
+   *
+   * Only places *you do not have* need to be in here — where you have it too,
+   * your own point is found first and carries the same name and coordinates.
+   */
+  const friendPointRef = useRef<Map<string, MapPoint>>(new Map())
   const friendRef = useRef(friendData)
   const linksRef = useRef(linksData)
   const nestRef = useRef(nestData)
-  const friendColourRef = useRef(friendColour ?? FRIEND_COLOUR)
   const dotModeRef = useRef(dotMode)
   const collabsRef = useRef(collabs)
   dotsRef.current = dotsData
   linkEndsRef.current = linkEndsData
   friendRef.current = friendData
+  friendPointRef.current = useMemo(() => {
+    const by = new Map<string, MapPoint>()
+    for (const lib of friends ?? []) {
+      for (const p of lib.points) if (!by.has(p.qid)) by.set(p.qid, p)
+    }
+    return by
+  }, [friends])
+  friendFidsRef.current = useMemo(() => {
+    const by = new Map<string, string[]>()
+    for (const f of friendData.features) {
+      const { qid, fid } = f.properties
+      const list = by.get(qid)
+      if (list) list.push(fid)
+      else by.set(qid, [fid])
+    }
+    return by
+  }, [friendData])
   linksRef.current = linksData
   nestRef.current = nestData
-  friendColourRef.current = friendColour ?? FRIEND_COLOUR
   dotModeRef.current = dotMode
   collabsRef.current = collabs
 
@@ -752,7 +791,13 @@ export function Globe({
         [p.x - NEAR_MISS, p.y - NEAR_MISS],
         [p.x + NEAR_MISS, p.y + NEAR_MISS],
       ]
-      const hits = map.queryRenderedFeatures(box, { layers: [LAYER.dots] })
+      // Yours first. Where you both have a city their dot is drawn *around*
+      // yours, so a click in the middle is on both — and it should mean the
+      // library the panel can say most about.
+      const mine = map.queryRenderedFeatures(box, { layers: [LAYER.dots] })
+      const hits = mine.length
+        ? mine
+        : map.queryRenderedFeatures(box, { layers: [LAYER.friendDots] })
       if (!hits.length) return null
       // Prefer the nearest centre, so a small dot sitting on top of a large one
       // is reachable rather than permanently shadowed by it.
@@ -768,6 +813,23 @@ export function Globe({
         }
       }
       return best
+    }
+
+    /**
+     * Which library a hit came from, and its qid.
+     *
+     * The friend source now promotes a namespaced `fid` — `libraryId:qid` — so a
+     * hit knows not merely that it is somebody else's but whose. The qid is read
+     * from properties rather than split back out of the id, because a qid is a
+     * qid and reconstructing one by string surgery is how it eventually contains
+     * a colon.
+     */
+    const dotQid = (f: MapGeoJSONFeature): { qid: string; owner: Owner } | null => {
+      if (f.layer.id === LAYER.friendDots) {
+        const qid = f.properties?.qid
+        return typeof qid === 'string' && qid ? { qid, owner: 'theirs' } : null
+      }
+      return f.id == null ? null : { qid: String(f.id), owner: 'mine' }
     }
 
     /**
@@ -891,14 +953,28 @@ export function Globe({
       setLinkEnds(map)
     }
 
-    /** Feature-state, so hover costs a repaint rather than a data upload. */
+    /**
+     * Feature-state, so hover costs a repaint rather than a data upload.
+     *
+     * A place is one thing however many libraries have it, so this lights your
+     * dot and every friend mark sharing the qid at once — three libraries' rings
+     * around one city brighten together, which is what makes them read as rings
+     * *around* it rather than as three unrelated marks.
+     */
     const setHover = (qid: string | null) => {
       if (qid === hovered.current) return
       if (hovered.current) {
         map.setFeatureState({ source: SOURCE.dots, id: hovered.current }, { hover: false })
       }
+      for (const fid of friendHovered.current) {
+        map.setFeatureState({ source: SOURCE.friendDots, id: fid }, { hover: false })
+      }
+      friendHovered.current = qid ? (friendFidsRef.current.get(qid) ?? []) : []
       hovered.current = qid
       if (qid) map.setFeatureState({ source: SOURCE.dots, id: qid }, { hover: true })
+      for (const fid of friendHovered.current) {
+        map.setFeatureState({ source: SOURCE.friendDots, id: fid }, { hover: true })
+      }
       map.getCanvas().style.cursor = qid ? 'pointer' : ''
       dotIso.current = qid ? (byQidRef.current.get(qid)?.country_iso ?? null) : null
       paintCountry(map)
@@ -916,10 +992,14 @@ export function Globe({
      * both reasons a name can be missing, without this having to know either.
      */
     const labelPlaced = (qid: string) => {
-      if (!map.getLayer(LAYER.labels)) return false
+      // Both layers: a place only they have gets its name from the friend layer,
+      // and forcing a second copy of a name already on screen is exactly the
+      // doubling the focus layer exists to avoid.
+      const layers = [LAYER.labels, LAYER.friendLabels].filter((id) => map.getLayer(id))
+      if (!layers.length) return false
       return map
-        .queryRenderedFeatures({ layers: [LAYER.labels] })
-        .some((f) => String(f.id) === qid)
+        .queryRenderedFeatures({ layers })
+        .some((f) => String(f.id) === qid || f.properties?.qid === qid)
     }
 
     /**
@@ -940,9 +1020,14 @@ export function Globe({
       if (!src) return
       const sel = selectedRef.current
       const hov = hovered.current
+      // Their places count as places here. Looking one up falls back to the
+      // overlay, or hovering a city only they have would silently decline to
+      // force its name — the one case where the label is most likely to have
+      // been collided away, since their names are placed after yours.
+      const known = (qid: string) => byQidRef.current.has(qid) || friendPointRef.current.has(qid)
       const qids: string[] = []
-      if (sel && byQidRef.current.has(sel)) qids.push(sel)
-      if (hov && hov !== sel && byQidRef.current.has(hov) && !labelPlaced(hov)) qids.push(hov)
+      if (sel && known(sel)) qids.push(sel)
+      if (hov && hov !== sel && known(hov) && !labelPlaced(hov)) qids.push(hov)
 
       // Only when it has actually changed. `idle` calls this to re-decide once
       // placement has settled, and setting the same data again would dirty the
@@ -953,7 +1038,7 @@ export function Globe({
         src.setData({
           type: 'FeatureCollection',
           features: qids.map((qid) => {
-            const p = byQidRef.current.get(qid)!
+            const p = (byQidRef.current.get(qid) ?? friendPointRef.current.get(qid))!
             return {
               type: 'Feature' as const,
               geometry: { type: 'Point' as const, coordinates: [p.lon, p.lat] },
@@ -965,15 +1050,19 @@ export function Globe({
 
       // Mirror the same set onto the dots, so exactly these names — and no
       // others — go transparent in the layer that placed them.
-      const next = new Set(qids)
-      for (const qid of forcedQids.current) {
-        if (!next.has(qid)) map.setFeatureState({ source: SOURCE.dots, id: qid }, { forced: false })
-      }
-      for (const qid of next) {
-        if (!forcedQids.current.has(qid)) {
-          map.setFeatureState({ source: SOURCE.dots, id: qid }, { forced: true })
+      //
+      // Onto *both* sources. A place only an imported library has is labelled by
+      // the friend layer, and leaving that layer's copy standing while the focus
+      // layer drew a forced one is how those places came to be named twice.
+      const setForced = (qid: string, on: boolean) => {
+        map.setFeatureState({ source: SOURCE.dots, id: qid }, { forced: on })
+        for (const fid of friendFidsRef.current.get(qid) ?? []) {
+          map.setFeatureState({ source: SOURCE.friendDots, id: fid }, { forced: on })
         }
       }
+      const next = new Set(qids)
+      for (const qid of forcedQids.current) if (!next.has(qid)) setForced(qid, false)
+      for (const qid of next) if (!forcedQids.current.has(qid)) setForced(qid, true)
       forcedQids.current = next
     }
     syncFocusRef.current = syncFocusLabels
@@ -992,16 +1081,19 @@ export function Globe({
     map.once('idle', () => onReadyRef.current?.())
 
     map.on('mousemove', (e) => {
-      const id = dotAt(e.point)?.id
-      setHover(id == null ? null : String(id))
+      const hit = dotAt(e.point)
+      const at = hit ? dotQid(hit) : null
+      // Either library's mark lights the place: setHover works on the qid, and
+      // the friend source now carries ids of its own to set state on.
+      setHover(at?.qid ?? null)
       // A dot wins outright. Arcs converge on the places they join, so near a
       // busy city every dot sits on a bundle of them — and the dot is both the
       // smaller target and the more likely intent.
-      const arc = id == null ? linkAt(e.point) : null
+      const arc = at ? null : linkAt(e.point)
       setLinkHover(arc)
-      // setHover already set this for a dot; an arc has to claim it too, or a
-      // clickable thing sits under an arrow cursor.
-      if (id == null) map.getCanvas().style.cursor = arc ? 'pointer' : ''
+      // setHover already claimed the cursor for a dot; an arc has to claim it
+      // too, or a clickable thing sits under an arrow.
+      if (!at) map.getCanvas().style.cursor = arc ? 'pointer' : ''
     })
     map.on('mouseout', () => {
       setHover(null)
@@ -1018,8 +1110,9 @@ export function Globe({
      */
     map.on('click', (e) => {
       const hit = dotAt(e.point)
-      if (hit?.id != null) {
-        onSelectRef.current(String(hit.id))
+      const at = hit ? dotQid(hit) : null
+      if (at) {
+        onSelectRef.current(at.qid, at.owner)
         return
       }
       // Same precedence as the hover, so what you clicked is what was lit.
@@ -1083,7 +1176,7 @@ export function Globe({
   // ----- keeping it up to date -----
 
   useEffect(() => withMap(setDots), [dotsData])
-  useEffect(() => withMap(setFriendDots), [friendData, friendColour])
+  useEffect(() => withMap(setFriendDots), [friendData])
   useEffect(() => withMap(setLinkEnds), [linkEndsData])
   useEffect(() => withMap(setNestLinks), [nestData])
   useEffect(() => withMap(setLinks), [linksData])
@@ -1111,12 +1204,19 @@ export function Globe({
   const prevSelected = useRef<string | null>(null)
   useEffect(() => {
     withMap((map) => {
+      // Both sources. A place only an imported library has has no feature in
+      // yours, so selecting it used to set state on nothing and the dot you had
+      // just clicked stayed exactly as it was.
+      const select = (qid: string, on: boolean) => {
+        map.setFeatureState({ source: SOURCE.dots, id: qid }, { selected: on })
+        for (const fid of friendFidsRef.current.get(qid) ?? []) {
+          map.setFeatureState({ source: SOURCE.friendDots, id: fid }, { selected: on })
+        }
+      }
       if (prevSelected.current && prevSelected.current !== selectedQid) {
-        map.setFeatureState({ source: SOURCE.dots, id: prevSelected.current }, { selected: false })
+        select(prevSelected.current, false)
       }
-      if (selectedQid) {
-        map.setFeatureState({ source: SOURCE.dots, id: selectedQid }, { selected: true })
-      }
+      if (selectedQid) select(selectedQid, true)
       setActiveLinks(map)
       syncFocusRef.current?.()
     })

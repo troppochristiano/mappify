@@ -18,6 +18,12 @@ export type Friend = {
   tracks: number
   artists: number
   places: number
+  /**
+   * Playlists that arrived with the library. Null for one imported before
+   * format 2, which is a different fact from zero — see `format` above, which
+   * is what the search panel reads to say which.
+   */
+  playlists: number | null
   unplaced_tracks: number | null
   /** Rows the import refused. Shown rather than swallowed. */
   skipped_rows: number
@@ -34,6 +40,27 @@ export type FriendPoint = {
   lon: number
   tracks: number
   artists: number
+}
+
+/** One of their playlists, as its own panel's heading. */
+export type PlaylistSummary = {
+  source_id: number
+  kind: string
+  name: string
+  image_url: string | null
+  tracks: number
+  /** How many of those you do not have — across all of it, not the shown page. */
+  missing: number
+}
+
+/** One of their artists at a place — the row a place panel lists. */
+export type FriendArtist = {
+  spotify_id: string
+  name: string
+  image_url: string | null
+  tracks: number
+  /** How many of those you do not have — the second line of the row. */
+  missing: number
 }
 
 export type SharedArtist = {
@@ -65,7 +92,7 @@ export type TopPlace = {
 export type LoneArtist = { id: string; name: string; tracks: number; image_url: string | null }
 
 /**
- * Artists you have from a city they are already deep in — the one figure here
+ * Artists they have from a city you are already deep in — the one figure here
  * that needs the place graph, and so the one no other music-compare tool can
  * produce.
  */
@@ -75,8 +102,9 @@ export type Discovery = {
   country_iso: string | null
   lat: number | null
   lon: number | null
-  /** How many tracks they already have from this city. */
-  theirTracks: number
+  /** How many tracks you already have from this city. */
+  yourTracks: number
+  /** Theirs, with their track counts — how much of each is waiting. */
   artists: LoneArtist[]
 }
 
@@ -136,6 +164,52 @@ export const friends = {
 
   compare: (id: number) =>
     json<{ friend: Friend; report: CompareReport }>(`/api/compare?friend=${id}`),
+
+  /**
+   * Their artists at a place, with the section's totals.
+   *
+   * The totals ride along so the heading can say how much is here and how much
+   * of it is new without loading every track to count — which is the whole
+   * reason the list is grouped by artist rather than flat.
+   */
+  placeArtists: (id: number, qid: string) =>
+    json<{ artists: FriendArtist[]; tracks: number; missing: number }>(
+      `/api/friend-place-artists?friend=${id}&qid=${encodeURIComponent(qid)}`
+    ),
+
+  /**
+   * A track to play from a place only they have.
+   *
+   * The row carries no uri — a shared file has none — so the caller builds
+   * `spotify:track:${id}`, as every other path that plays their music does.
+   */
+  placeTrack: (id: number, qid: string) =>
+    json<{ spotify_id: string; name: string; artist: string } | { error: string }>(
+      `/api/friend-place-track?friend=${id}&qid=${encodeURIComponent(qid)}`
+    ),
+
+  /** One of their artists, opened. */
+  artistTracks: (id: number, artist: string) =>
+    json<{ tracks: { spotify_id: string; name: string; mine: 0 | 1 }[] }>(
+      `/api/friend-artist-tracks?friend=${id}&artist=${encodeURIComponent(artist)}`
+    ),
+
+  /**
+   * One of their playlists, opened.
+   *
+   * `sourceId` is the id their own file used, which is why it is always passed
+   * with the friend it belongs to: apart, the number addresses nothing.
+   *
+   * `shown` is capped server-side — their Liked Songs is their whole library —
+   * so a panel that draws `tracks` rows would be claiming to show more than it
+   * has. `missing` counts the whole playlist, not the page of it.
+   */
+  playlistTracks: (id: number, sourceId: number) =>
+    json<{
+      playlist: PlaylistSummary
+      tracks: { spotify_id: string; name: string; artist: string | null; mine: 0 | 1 }[]
+      shown: number
+    }>(`/api/friend-playlist-tracks?friend=${id}&source=${sourceId}`),
 
   remove: (id: number) =>
     json<{ ok: true }>('/api/friend-delete', {

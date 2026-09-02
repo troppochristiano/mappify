@@ -541,6 +541,29 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 
 .artist-list { list-style: none; margin: 0; padding: 0; }
 
+/* Which imported libraries go into a playlist, one row each.
+   A whole-row label rather than a bare box beside a name: the rows are 34px of
+   text and 13px of checkbox, and clicking the name is what anybody tries. */
+.share-picks { list-style: none; margin: 0 0 12px; padding: 0; }
+.share-pick {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: 6px; cursor: pointer;
+  background: var(--surface);
+}
+.share-picks li + li { margin-top: 4px; }
+.share-pick:hover { background: var(--surface-hi); }
+/* The one native control in the app that is worth keeping native: it is a
+   checkbox, it has to read as one, and accent-color is the whole of the theming
+   it needs. */
+.share-pick input { accent-color: var(--accent); flex: none; margin: 0; }
+.share-pick-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+
+/* The playlist preview's sample rows. They have carried these class names since
+   the panel was written and never had a rule, so the track ran into its artist
+   on one line — which the "from <library>" the row now ends with made worse. */
+.artist-row { padding: 4px 2px; }
+.artist-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+
 .arow { border-radius: 6px; }
 .arow + .arow { margin-top: 1px; }
 
@@ -548,9 +571,15 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
    propagation, so the big safe action gets the big hit area. */
 .arow-head {
   display: flex; align-items: center; gap: 10px;
-  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  padding: 9px 8px; border-radius: 6px; cursor: pointer;
   transition: background .12s;
 }
+/* Bigger than the other lists this cover appears in, and only here: a place
+   panel is a list you read down rather than scan, and the artwork is doing more
+   work in it. At 36 the cover is also taller than a two-line text block, so a
+   row with an origin under the name and one without are the same height —
+   which is what makes your artists and an imported library's line up. */
+.arow .thumb { flex: 0 0 36px; width: 36px; height: 36px; }
 .arow-head:hover { background: var(--surface-hi); }
 .arow-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .arow.open > .arow-head { background: var(--surface-hi); }
@@ -564,7 +593,7 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 
 .arow-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .arow-name {
-  font-weight: 600; font-size: 13.5px; color: var(--text);
+  font-weight: 600; font-size: 14px; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .arow-place {
@@ -580,6 +609,10 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 /* Revealed on hover/focus so the resting row stays quiet, but never hidden from
    keyboards or touch, where there is no hover to reveal them. */
 .arow-actions { flex: 0 0 auto; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+/* A row with no actions still holds their column: two 22px buttons and the 4px
+   between them. An imported library's artists have nothing to play or open, and
+   without this their counts would sit 48px right of yours in the same panel. */
+.arow-actions:empty { flex: 0 0 48px; }
 .arow-head:hover .arow-actions,
 .arow-head:focus-within .arow-actions,
 .arow.open .arow-actions { opacity: 1; }
@@ -606,12 +639,33 @@ aside ul, .menu-list, .menu-list ul { list-style: none; margin: 0; padding: 0; }
 .track-btn:hover { background: var(--surface-hi); color: var(--text); }
 .track-btn.playing { color: var(--accent); }
 .track-mark { flex: 0 0 9px; font-size: 8px; opacity: 0; }
+/* The playing mark is U+25A0, a true square — U+25AE, which it replaces, is
+   defined as a vertical *rectangle* and looked like one. The square has a wider
+   body than the triangle beside it, so it is set a shade smaller to keep the two
+   states optically equal rather than nominally equal. */
+.track-btn.playing .track-mark { font-size: 7px; }
 .track-btn:hover .track-mark, .track-btn.playing .track-mark { opacity: 1; }
+/* Smaller than the 32px an artist row gives it: a track row is 12.5px type,
+   and a cover the size of the one above it would make the list look like a
+   second list of artists. */
+.track-btn .thumb { flex: 0 0 22px; width: 22px; height: 22px; }
 .track-name { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.track-album {
+/* The right-hand column: an album under one of your artists, the artist inside
+   one of their playlists. Different fact, same job — the thing that says what a
+   track is once the heading has stopped saying it. */
+.track-album, .track-artist {
   flex: 1 1 auto; text-align: right; color: var(--dim); font-size: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* An imported playlist, opened. The indent on .track-list is for a list nested
+   under the artist row that owns it; here the list *is* the panel. */
+.playlist-tracks { padding-left: 0; }
+.playlist-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px;
+}
+.playlist-head .thumb { flex: 0 0 40px; width: 40px; height: 40px; }
 .track-empty { color: var(--dim); font-size: 12px; padding: 4px 8px; }
 
 /* ---------- floating window ---------- */
@@ -698,6 +752,12 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
   text-underline-offset: 2px;
 }
 .steps a:hover { color: var(--accent-hi); }
+
+/* The illustrated walkthrough, under the steps. Same reasoning as .steps a — it
+   is a link and has to read as one — but dimmer, because it is the alternative
+   route for anyone the three lines above did not reach, not the main path. */
+.signin .fine a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.signin .fine a:hover { color: var(--text); }
 .copyrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .copyrow code {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
@@ -1244,10 +1304,13 @@ footer.app p { margin: 0 0 8px; max-width: 74ch; }
 
 /* A row from an imported library. */
 .search-row-theirs .menu-name { display: inline-flex; align-items: center; gap: 6px; }
-/* The same hollow ring their places wear on the globe, so the mark needs no key. */
+/* The same filled dot their places wear on the globe, so the mark needs no key.
+   It followed the globe when that was a hollow ring and follows it now that it
+   is filled — the whole value of this mark is that it is recognisably the thing
+   you just saw on the map. */
 .owner-dot {
-  width: 8px; height: 8px; border-radius: 50%; border: 2px solid currentColor;
-  background: transparent; flex: none;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor; flex: none;
 }
 /* A friend's artist cannot be opened — there is no page for somebody else's
    artist — so the row reads as a fact rather than offering a dead control. */

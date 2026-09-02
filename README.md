@@ -39,6 +39,10 @@ Either way there is nothing else to install — the runtime is inside.
 > like a dead end and is not one. From a terminal, `xattr -dr
 > com.apple.quarantine /Applications/Mappify.app` does the same thing in one
 > step.
+>
+> **[Getting started, with pictures](https://github.com/troppochristiano/mappify/blob/main/docs/getting-started.md)**
+> walks through both of those dialogs, and the Spotify step below, a screen at a
+> time — worth sending to anyone who would rather not read a README.
 
 It opens in **its own window** — no tabs, no address bar, its own taskbar icon.
 That is a Chromium app window (`--app=`), using the browser you already have and
@@ -77,7 +81,9 @@ The app asks for one thing on first run: a **Spotify Client ID**. It walks you
 through getting one — create an app at
 [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), paste
 in the redirect URI it shows you, copy the ID back. Two minutes, free, and the
-screen has a copy button for the URI, which has to match exactly.
+screen has a copy button for the URI, which has to match exactly. The
+[illustrated version](https://github.com/troppochristiano/mappify/blob/main/docs/getting-started.md#telling-spotify-about-your-copy)
+shows the dashboard form with the two fields that matter marked.
 
 Then click **Connect Spotify** and import.
 
@@ -285,7 +291,10 @@ so the corrections in the bundle are current.
 - **Globe.** Drag to spin, scroll to zoom, and a crosshair tunes to whatever is
   under it. Clicking a place plays a random track from it.
 - **Geo playlists.** Turn any place into a private Spotify playlist. Selecting New
-  York City includes Brooklyn, Harlem and the rest, because places nest.
+  York City includes Brooklyn, Harlem and the rest, because places nest. An
+  imported library with music from the same place is offered as a tick box —
+  one per library, off by default, and on where the place is theirs and not
+  yours, which is otherwise a playlist with nothing in it.
 - **Search.** Results are artists, not tracks, and matching dots stay lit on the
   globe while the rest dim.
 
